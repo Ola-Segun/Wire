@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(du:*)",
+      "Bash(npx create-next-app:*)",
+      "Bash(npx create-next-app@latest:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm dlx:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx next build:*)",
+      "Bash(npx convex:*)",
+      "Bash(pnpm list:*)",
+      "Bash(ls:*)",
+      "Bash(wc:*)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "WebSearch",
+      "WebFetch(domain:magicui.design)",
+      "WebFetch(domain:ui.aceternity.com)",
+      "Bash(ls -la \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/\")"
+    ]
+  }
+}

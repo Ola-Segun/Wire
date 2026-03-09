@@ -1,0 +1,293 @@
+import { v } from "convex/values";
+import { mutation, query, internalMutation } from "./_generated/server";
+
+// ============================================
+// HELPERS
+// ============================================
+
+// Resolve current user from auth identity
+async function resolveUser(ctx: { auth: any; db: any }) {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) return null;
+  return await ctx.db
+    .query("users")
+    .withIndex("by_clerk_id", (q: any) => q.eq("clerkId", identity.subject))
+    .first();
+}
+
+// ============================================
+// THREAD RESOLUTION — Core of Conversation Continuity
+// ============================================
+// This is the foundation for wire2.md's "Conversation Continuity Threads":
+// When a message arrives, we try to find an existing conversation to attach it to.
+// Matching strategy:
+//   1. Exact threadId match (e.g., Gmail threadId, Slack thread_ts)
+//   2. Same client + recent timeframe = merge into active conversation
+//   3. No match = create a new conversation
+//
+// TODO [AI PHASE]: Add semantic similarity matching — if AI detects the topic
+// matches an existing conversation, merge even without a matching threadId.
+
+/**
+ * Resolves (find-or-create) a conversation for an incoming message.
+ * Called by sync adapters when processing new messages.
+ *
+ * Strategy:
+ *  1. If threadId is provided, look for a conversation with a matching threadRef
+ *  2. If no match, find an "active" conversation for this client within 24h
+ *  3. If still no match, create a new conversation
+ */
+export const resolveForMessage = mutation({
+  args: {
+    userId: v.id("users"),
+    clientId: v.id("clients"),
+    platform: v.string(),
+    threadId: v.optional(v.string()),
+    subject: v.optional(v.string()),
+    timestamp: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    // Strategy 1: Exact thread reference match
+    if (args.threadId) {
+      const conversations = await ctx.db
+        .query("conversations")
+        .withIndex("by_client", (q) => q.eq("clientId", args.clientId))
+        .collect();
+
+      const threadMatch = conversations.find((c) =>
+        c.threadRefs.some(
+          (ref) =>
+            ref.platform === args.platform && ref.threadId === args.threadId
+        )
+      );
+
+      if (threadMatch) {
+        // Update the conversation stats
+        const platforms = threadMatch.platforms.includes(args.platform)
+          ? threadMatch.platforms
+          : [...threadMatch.platforms, args.platform];
+
+        await ctx.db.patch(threadMatch._id, {
+          messageCount: threadMatch.messageCount + 1,
+          lastMessageAt: Math.max(threadMatch.lastMessageAt, args.timestamp),
+          platforms,
+          status: "active",
+          updatedAt: now,
+        });
+
+        return threadMatch._id;
+      }
+    }
+
+    // Strategy 2: Find active conversation for this client within 24 hours
+    const ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+    const activeConversations = await ctx.db
+      .query("conversations")
+      .withIndex("by_client", (q) => q.eq("clientId", args.clientId))
+      .collect();
+
+    const recentActive = activeConversations.find(
+      (c) =>
+        c.status === "active" &&
+        args.timestamp - c.lastMessageAt < ACTIVE_WINDOW_MS
+    );
+
+    if (recentActive) {
+      const platforms = recentActive.platforms.includes(args.platform)
+        ? recentActive.platforms
+        : [...recentActive.platforms, args.platform];
+
+      const threadRefs = args.threadId
+        ? [
+            ...recentActive.threadRefs.filter(
+              (r) =>
+                !(
+                  r.platform === args.platform &&
+                  r.threadId === args.threadId
+                )
+            ),
+            { platform: args.platform, threadId: args.threadId },
+          ]
+        : recentActive.threadRefs;
+
+      await ctx.db.patch(recentActive._id, {
+        messageCount: recentActive.messageCount + 1,
+        lastMessageAt: Math.max(recentActive.lastMessageAt, args.timestamp),
+        platforms,
+        threadRefs,
+        updatedAt: now,
+      });
+
+      return recentActive._id;
+    }
+
+    // Strategy 3: Create a new conversation
+    const threadRefs = args.threadId
+      ? [{ platform: args.platform, threadId: args.threadId }]
+      : [];
+
+    const conversationId = await ctx.db.insert("conversations", {
+      userId: args.userId,
+      clientId: args.clientId,
+      subject: args.subject,
+      platforms: [args.platform],
+      messageCount: 1,
+      lastMessageAt: args.timestamp,
+      firstMessageAt: args.timestamp,
+      status: "active",
+      threadRefs,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return conversationId;
+  },
+});
+
+// ============================================
+// INTERNAL — Called by cron to mark dormant conversations
+// ============================================
+
+// Mark conversations as dormant if no messages for 7 days
+export const markDormant = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const DORMANT_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+    const cutoff = Date.now() - DORMANT_AFTER_MS;
+
+    // Get all active conversations
+    const active = await ctx.db
+      .query("conversations")
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .collect();
+
+    let count = 0;
+    for (const conv of active) {
+      if (conv.lastMessageAt < cutoff) {
+        await ctx.db.patch(conv._id, {
+          status: "dormant",
+          updatedAt: Date.now(),
+        });
+        count++;
+      }
+    }
+
+    return { markedDormant: count };
+  },
+});
+
+// ============================================
+// QUERIES
+// ============================================
+
+// Get a single conversation
+export const get = query({
+  args: { id: v.id("conversations") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.id);
+  },
+});
+
+// Get conversations for a specific client
+export const getByClient = query({
+  args: {
+    clientId: v.id("clients"),
+    status: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+
+    const conversations = await ctx.db
+      .query("conversations")
+      .withIndex("by_client", (q) => q.eq("clientId", args.clientId))
+      .order("desc")
+      .collect();
+
+    if (args.status) {
+      return conversations.filter((c) => c.status === args.status);
+    }
+
+    return conversations;
+  },
+});
+
+// Get recent conversations for current user
+export const getRecent = query({
+  args: {
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const user = await resolveUser(ctx);
+    if (!user) return [];
+
+    const limit = args.limit ?? 20;
+
+    return await ctx.db
+      .query("conversations")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .order("desc")
+      .take(limit);
+  },
+});
+
+// Get messages for a conversation (threaded view)
+export const getMessages = query({
+  args: {
+    conversationId: v.id("conversations"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 50;
+
+    return await ctx.db
+      .query("messages")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId)
+      )
+      .order("asc") // Chronological for thread view
+      .take(limit);
+  },
+});
+
+// ============================================
+// MUTATIONS
+// ============================================
+
+// Archive a conversation
+export const archive = mutation({
+  args: { id: v.id("conversations") },
+  handler: async (ctx, args) => {
+    const user = await resolveUser(ctx);
+    if (!user) throw new Error("Not authenticated");
+
+    const conv = await ctx.db.get(args.id);
+    if (!conv) throw new Error("Conversation not found");
+    if (conv.userId !== user._id) throw new Error("Unauthorized");
+
+    await ctx.db.patch(args.id, {
+      status: "archived",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+// Unarchive a conversation
+export const unarchive = mutation({
+  args: { id: v.id("conversations") },
+  handler: async (ctx, args) => {
+    const user = await resolveUser(ctx);
+    if (!user) throw new Error("Not authenticated");
+
+    const conv = await ctx.db.get(args.id);
+    if (!conv) throw new Error("Conversation not found");
+    if (conv.userId !== user._id) throw new Error("Unauthorized");
+
+    await ctx.db.patch(args.id, {
+      status: "active",
+      updatedAt: Date.now(),
+    });
+  },
+});
