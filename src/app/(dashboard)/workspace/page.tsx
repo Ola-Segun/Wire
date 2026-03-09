@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, memo, useCallback } from "react";
+import { useEffect, useState, memo, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
@@ -21,9 +21,22 @@ import {
   FileText,
   Newspaper,
   Loader2,
+  CalendarDays,
+  Calendar,
+  Clock,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import Link from "next/link";
-import { formatRelativeTime } from "@/lib/date-utils";
+import {
+  formatRelativeTime,
+  getDeadlineProximity,
+  getDayBounds,
+  getWeekBounds,
+  formatTimeOfDay,
+} from "@/lib/date-utils";
+import { format, addDays, startOfWeek } from "date-fns";
 
 // ============================================
 // WIDGET REGISTRY — Available widget types
@@ -46,6 +59,11 @@ const WIDGET_REGISTRY: WidgetMeta[] = [
   { type: "revenue_signals", name: "Revenue Signals", description: "Deal signals, upsells, and budget changes", sizes: ["2x1", "1x2"], icon: <DollarSign className="h-4 w-4" /> },
   { type: "conversation_summaries", name: "Thread Summaries", description: "Recent AI conversation summaries", sizes: ["2x2", "2x1"], icon: <FileText className="h-4 w-4" /> },
   { type: "daily_briefing", name: "Daily Briefing", description: "Morning portfolio digest: priorities, risks, opportunities", sizes: ["2x2", "2x1"], icon: <Newspaper className="h-4 w-4" /> },
+  { type: "sentiment_chart", name: "Sentiment Radar", description: "Client sentiment trends — spot declining relationships at a glance", sizes: ["2x1", "2x2"], icon: <TrendingUp className="h-4 w-4" /> },
+  { type: "deadline_ticker", name: "Deadline Ticker", description: "Live count of overdue, due today, and due this week", sizes: ["2x1"], icon: <Clock className="h-4 w-4" /> },
+  { type: "agenda_today", name: "Today's Agenda", description: "All commitments due today, sorted by time-of-day", sizes: ["2x2"], icon: <CalendarDays className="h-4 w-4" /> },
+  { type: "agenda_week", name: "Week Agenda", description: "7-day commitment overview across all clients", sizes: ["2x2", "3x2"], icon: <Calendar className="h-4 w-4" /> },
+  { type: "commitment_calendar", name: "Calendar", description: "Month-view calendar with commitment dot indicators", sizes: ["2x2"], icon: <Calendar className="h-4 w-4" /> },
 ];
 
 // ============================================
@@ -57,6 +75,7 @@ const SIZE_CLASSES: Record<string, string> = {
   "2x1": "col-span-2 row-span-1",
   "1x2": "col-span-1 row-span-2",
   "2x2": "col-span-2 row-span-2",
+  "3x2": "col-span-3 row-span-2",
 };
 
 // ============================================
@@ -253,6 +272,16 @@ const WidgetRenderer = memo(function WidgetRenderer({
       return <ConversationSummariesWidget compact={size === "2x1"} />;
     case "daily_briefing":
       return <DailyBriefingWidget compact={size === "2x1"} />;
+    case "sentiment_chart":
+      return <SentimentChartWidget compact={size === "2x1"} />;
+    case "deadline_ticker":
+      return <DeadlineTickerWidget />;
+    case "agenda_today":
+      return <AgendaTodayWidget />;
+    case "agenda_week":
+      return <AgendaWeekWidget compact={size === "2x2"} />;
+    case "commitment_calendar":
+      return <CommitmentCalendarWidget />;
     default:
       return (
         <div className="surface-raised rounded-xl h-full flex items-center justify-center text-muted-foreground text-xs">
@@ -939,6 +968,491 @@ const DailyBriefingWidget = memo(function DailyBriefingWidget({
           </button>
         </div>
       )}
+    </div>
+  );
+});
+
+// --- Sentiment Radar ---
+// Zero-cost: reads intelligence.sentimentTrend already stored on client records.
+// Clients are sorted: declining first, then stable, then improving.
+const SENTIMENT_TREND_META: Record<
+  string,
+  { icon: React.ReactNode; label: string; rowClass: string; badgeClass: string }
+> = {
+  declining:  {
+    icon: <TrendingDown className="h-3 w-3 text-urgent" />,
+    label: "Declining",
+    rowClass: "border-urgent/20 bg-urgent/5",
+    badgeClass: "bg-urgent/10 text-urgent",
+  },
+  stable:     {
+    icon: <Minus className="h-3 w-3 text-muted-foreground" />,
+    label: "Stable",
+    rowClass: "border-border/20",
+    badgeClass: "bg-muted text-muted-foreground",
+  },
+  improving:  {
+    icon: <TrendingUp className="h-3 w-3 text-success" />,
+    label: "Improving",
+    rowClass: "border-success/20 bg-success/5",
+    badgeClass: "bg-success/10 text-success",
+  },
+};
+
+// Churn risk label derived from aggregateChurnRisk (exists in schema)
+const CHURN_DISPLAY: Record<string, { label: string; cls: string }> = {
+  high:   { label: "High churn risk",   cls: "text-urgent" },
+  medium: { label: "Medium churn risk", cls: "text-warning" },
+  low:    { label: "Low churn risk",    cls: "text-muted-foreground" },
+  none:   { label: "Healthy",           cls: "text-success" },
+};
+
+const TREND_ORDER: Record<string, number> = { declining: 0, stable: 1, improving: 2 };
+
+const SentimentChartWidget = memo(function SentimentChartWidget({
+  compact,
+}: {
+  compact?: boolean;
+}) {
+  const clients = useQuery(api.clients.getByUser, {});
+  const limit = compact ? 5 : 10;
+
+  // Sort declining → stable → improving so the highest-risk rows appear first
+  const sorted = ((clients as any[]) ?? [])
+    .filter((c: any) => c.intelligence?.sentimentTrend)
+    .sort((a: any, b: any) => {
+      const ta = TREND_ORDER[a.intelligence.sentimentTrend] ?? 1;
+      const tb = TREND_ORDER[b.intelligence.sentimentTrend] ?? 1;
+      return ta - tb;
+    })
+    .slice(0, limit);
+
+  return (
+    <div className="surface-raised rounded-xl h-full p-4 flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 mb-3 shrink-0">
+        <TrendingUp className="h-4 w-4 text-primary" />
+        <span className="text-sm font-display font-semibold text-foreground">
+          Sentiment Radar
+        </span>
+        {sorted.filter((c: any) => c.intelligence?.sentimentTrend === "declining").length > 0 && (
+          <span className="ml-auto text-[10px] font-mono font-bold bg-urgent/10 text-urgent px-1.5 py-0.5 rounded-full">
+            {sorted.filter((c: any) => c.intelligence?.sentimentTrend === "declining").length} declining
+          </span>
+        )}
+      </div>
+
+      <div className="space-y-1.5 overflow-y-auto flex-1 scrollbar-thin">
+        {clients === undefined ? (
+          <div className="flex-1 flex items-center justify-center text-muted-foreground text-[11px]">
+            Loading…
+          </div>
+        ) : sorted.length > 0 ? (
+          sorted.map((client: any) => {
+            const trend = client.intelligence?.sentimentTrend ?? "stable";
+            const meta = SENTIMENT_TREND_META[trend] ?? SENTIMENT_TREND_META.stable;
+            const churnRisk = client.intelligence?.aggregateChurnRisk ?? "";
+            const churnDisplay = CHURN_DISPLAY[churnRisk];
+            const health = client.relationshipHealth ?? 50;
+
+            return (
+              <Link
+                key={client._id}
+                href={`/clients/${client._id}`}
+                className={`flex items-center gap-2.5 p-2 rounded-lg border transition-colors hover:bg-accent/50 ${meta.rowClass}`}
+              >
+                {/* Trend icon */}
+                <span className="shrink-0">{meta.icon}</span>
+
+                {/* Client info */}
+                <div className="flex-1 min-w-0">
+                  <span className="text-xs font-medium text-foreground truncate block">
+                    {client.name}
+                  </span>
+                  {churnDisplay && (
+                    <span className={`text-[10px] font-mono ${churnDisplay.cls}`}>
+                      {churnDisplay.label}
+                    </span>
+                  )}
+                </div>
+
+                {/* Health bar */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="w-10 h-1 rounded-full bg-border/30">
+                    <div
+                      className={`h-full rounded-full ${
+                        health >= 70 ? "bg-success" : health >= 40 ? "bg-warning" : "bg-urgent"
+                      }`}
+                      style={{ width: `${health}%` }}
+                    />
+                  </div>
+                  <span
+                    className={`text-[10px] font-mono font-bold ${
+                      health >= 70
+                        ? "text-success"
+                        : health >= 40
+                          ? "text-warning"
+                          : "text-urgent"
+                    }`}
+                  >
+                    {health}
+                  </span>
+                </div>
+              </Link>
+            );
+          })
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center gap-1.5 text-center">
+            <TrendingUp className="h-6 w-6 text-muted-foreground/20" />
+            <p className="text-[11px] text-muted-foreground">
+              No sentiment data yet
+            </p>
+            <p className="text-[10px] text-muted-foreground/60">
+              Trends appear after AI analysis runs
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+// ============================================
+// NEW WIDGETS — Calendar & Agenda System
+// ============================================
+
+// --- Deadline Ticker ---
+// Shows 3 counts: overdue | due today | due this week. Zero-cost, reads commitments.
+const DeadlineTickerWidget = memo(function DeadlineTickerWidget() {
+  const { start: dayStart, end: dayEnd }   = useMemo(() => getDayBounds(),  []);
+  const { start: weekStart, end: weekEnd } = useMemo(() => getWeekBounds(), []);
+
+  const todayItems  = useQuery(api.commitments.getAllForCalendar, { startDate: dayStart,  endDate: dayEnd  });
+  const weekItems   = useQuery(api.commitments.getAllForCalendar, { startDate: weekStart, endDate: weekEnd });
+  const pendingAll  = useQuery(api.commitments.getPending);
+
+  const overdue  = (pendingAll ?? []).filter((c: any) => c.isOverdue).length;
+  const dueToday = (todayItems  ?? []).filter((c: any) => c.status === "pending").length;
+  const dueWeek  = (weekItems   ?? []).filter((c: any) => c.status === "pending").length;
+
+  const TICKERS = [
+    { label: "Overdue",     value: overdue,  color: "text-urgent",  bg: "bg-urgent/10"  },
+    { label: "Due Today",   value: dueToday, color: "text-warning", bg: "bg-warning/10" },
+    { label: "This Week",   value: dueWeek,  color: "text-primary", bg: "bg-primary/10" },
+  ];
+
+  return (
+    <div className="surface-raised rounded-xl h-full p-4 flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 mb-3 shrink-0">
+        <Clock className="h-4 w-4 text-primary" />
+        <span className="text-sm font-display font-semibold text-foreground">Deadlines</span>
+        <Link href="/calendar" className="ml-auto text-[10px] text-primary hover:text-primary/80 font-medium">
+          Calendar →
+        </Link>
+      </div>
+      <div className="flex-1 flex items-center justify-around">
+        {TICKERS.map(({ label, value, color, bg }) => (
+          <div key={label} className="flex flex-col items-center gap-1">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${bg}`}>
+              <span className={`text-xl font-mono font-bold ${color}`}>{value ?? "—"}</span>
+            </div>
+            <span className="text-[10px] text-muted-foreground font-mono">{label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+// --- Agenda Today ---
+// Today's commitments sorted by time-of-day. Inline complete action.
+const TYPE_BADGE: Record<string, string> = {
+  deadline:    "bg-urgent/10 text-urgent",
+  deliverable: "bg-primary/10 text-primary",
+  payment:     "bg-success/10 text-success",
+  meeting:     "bg-chart-4/10 text-chart-4",
+  check_in:    "bg-muted text-muted-foreground",
+};
+
+const AgendaTodayWidget = memo(function AgendaTodayWidget() {
+  const { start, end } = useMemo(() => getDayBounds(), []);
+  const items = useQuery(api.commitments.getAgendaForDateRange, {
+    startDate: start,
+    endDate: end,
+    includeOverdue: true,
+  });
+
+  return (
+    <div className="surface-raised rounded-xl h-full p-4 flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 mb-3 shrink-0">
+        <CalendarDays className="h-4 w-4 text-primary" />
+        <span className="text-sm font-display font-semibold text-foreground">Today</span>
+        <span className="text-[10px] text-muted-foreground ml-1" suppressHydrationWarning>{format(new Date(), "EEE, MMM d")}</span>
+        {items && items.length > 0 && (
+          <span className="ml-auto text-[10px] font-mono font-bold bg-warning/10 text-warning px-1.5 py-0.5 rounded-full">
+            {items.length}
+          </span>
+        )}
+      </div>
+      <div className="space-y-1.5 overflow-y-auto flex-1 scrollbar-thin">
+        {items === undefined ? (
+          <div className="flex-1 flex items-center justify-center text-muted-foreground text-[11px]">Loading…</div>
+        ) : items.length > 0 ? (
+          items.map((c: any) => {
+            const proximity = c.dueDate ? getDeadlineProximity(c.dueDate) : null;
+            const timeHint = formatTimeOfDay(c.dueTimeOfDay);
+            const badge = TYPE_BADGE[c.type] ?? "bg-muted text-muted-foreground";
+            return (
+              <Link
+                key={c._id}
+                href={`/clients/${c.clientId}`}
+                className={`flex items-start gap-2.5 p-2.5 rounded-lg border transition-colors hover:bg-accent/50 ${
+                  c.isOverdue ? "border-urgent/20 bg-urgent/5" : "border-border/20"
+                }`}
+              >
+                <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${
+                  c.isOverdue ? "bg-urgent" : proximity?.severity === "warning" ? "bg-warning" : "bg-primary"
+                }`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[11px] text-foreground leading-snug line-clamp-1">{c.text}</p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-[10px] text-muted-foreground truncate">{c.clientName}</span>
+                    <span className={`text-[9px] font-mono font-bold ${
+                      proximity?.severity === "critical" ? "text-urgent" :
+                      proximity?.severity === "warning" ? "text-warning" : "text-muted-foreground"
+                    }`}>
+                      {proximity?.label ?? ""}
+                    </span>
+                    {timeHint && (
+                      <span className="text-[9px] text-muted-foreground/60">{timeHint}</span>
+                    )}
+                  </div>
+                </div>
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${badge}`}>
+                  {c.type}
+                </span>
+              </Link>
+            );
+          })
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center gap-1.5 text-center">
+            <CheckCircle2 className="h-6 w-6 text-muted-foreground/20" />
+            <p className="text-[11px] text-muted-foreground">Nothing due today</p>
+          </div>
+        )}
+      </div>
+      <div className="mt-2 pt-2 border-t border-border/20 shrink-0">
+        <Link href="/calendar" className="text-[10px] text-primary hover:text-primary/80 font-medium">
+          Open calendar →
+        </Link>
+      </div>
+    </div>
+  );
+});
+
+// --- Agenda Week ---
+// 7-day strip showing commitments grouped by day.
+const AgendaWeekWidget = memo(function AgendaWeekWidget({ compact }: { compact?: boolean }) {
+  const { start, end } = useMemo(() => getWeekBounds(), []);
+  const items = useQuery(api.commitments.getAgendaForDateRange, {
+    startDate: start,
+    endDate: end,
+    includeOverdue: true,
+  });
+
+  // Build 7 day buckets
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(startOfWeek(new Date(), { weekStartsOn: 1 }), i);
+    return {
+      date: d,
+      label: format(d, "EEE"),
+      dayLabel: format(d, "d"),
+      isToday: format(d, "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd"),
+      items: (items ?? []).filter((c: any) => {
+        if (!c.dueDate) return false;
+        return format(new Date(c.dueDate), "yyyy-MM-dd") === format(d, "yyyy-MM-dd");
+      }),
+    };
+  });
+
+  // Prepend overdue
+  const overdue = (items ?? []).filter((c: any) => c.isOverdue);
+
+  return (
+    <div className="surface-raised rounded-xl h-full p-4 flex flex-col overflow-hidden">
+      <div className="flex items-center gap-2 mb-3 shrink-0">
+        <Calendar className="h-4 w-4 text-primary" />
+        <span className="text-sm font-display font-semibold text-foreground">This Week</span>
+        <Link href="/calendar" className="ml-auto text-[10px] text-primary hover:text-primary/80 font-medium">
+          Full calendar →
+        </Link>
+      </div>
+
+      {/* Overdue strip */}
+      {overdue.length > 0 && (
+        <div className="mb-2 p-2 rounded-lg bg-urgent/5 border border-urgent/20 shrink-0">
+          <p className="text-[9px] font-bold text-urgent uppercase tracking-wider mb-1">
+            {overdue.length} overdue
+          </p>
+          <div className="space-y-0.5">
+            {overdue.slice(0, 2).map((c: any) => (
+              <Link key={c._id} href={`/clients/${c.clientId}`}
+                className="flex items-center gap-1.5 hover:opacity-80">
+                <span className="text-[10px] text-foreground/80 truncate">{c.text}</span>
+                <span className="text-[9px] text-muted-foreground shrink-0">{c.clientName}</span>
+              </Link>
+            ))}
+            {overdue.length > 2 && (
+              <p className="text-[9px] text-urgent font-mono">+{overdue.length - 2} more</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 7-day grid */}
+      <div className={`grid gap-1.5 flex-1 overflow-hidden ${compact ? "grid-cols-7" : "grid-cols-7"}`}>
+        {days.map(({ label, dayLabel, isToday, items: dayItems }) => (
+          <div key={label} className="flex flex-col gap-1">
+            {/* Day header */}
+            <div className={`text-center pb-1 border-b ${isToday ? "border-primary/40" : "border-border/20"}`}>
+              <p className={`text-[9px] font-mono uppercase ${isToday ? "text-primary font-bold" : "text-muted-foreground"}`}>
+                {label}
+              </p>
+              <p className={`text-[11px] font-bold ${isToday ? "text-primary" : "text-foreground/60"}`}>
+                {dayLabel}
+              </p>
+            </div>
+            {/* Day items */}
+            <div className="space-y-0.5 overflow-hidden">
+              {dayItems.slice(0, 3).map((c: any) => (
+                <Link key={c._id} href={`/clients/${c.clientId}`}
+                  className="block p-0.5 rounded text-[9px] leading-tight text-foreground/70 hover:text-foreground truncate hover:bg-accent/50 transition-colors">
+                  {c.text}
+                </Link>
+              ))}
+              {dayItems.length > 3 && (
+                <p className="text-[8px] text-muted-foreground font-mono">+{dayItems.length - 3}</p>
+              )}
+              {dayItems.length === 0 && (
+                <div className="h-1 w-4 rounded-full bg-border/20 mx-auto mt-1" />
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+});
+
+// --- Mini Commitment Calendar ---
+// Month grid with dot indicators per day. Click a day → navigates to /calendar.
+const CommitmentCalendarWidget = memo(function CommitmentCalendarWidget() {
+  const [viewDate, setViewDate] = useState(new Date());
+  const { start, end } = useMemo(() => {
+    const s = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
+    const e = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0, 23, 59, 59, 999);
+    return { start: s.getTime(), end: e.getTime() };
+  }, [viewDate]);
+
+  const items = useQuery(api.commitments.getAllForCalendar, { startDate: start, endDate: end });
+
+  // Build a map of day-of-month → commitment counts
+  const dayMap = new Map<number, { pending: number; overdue: number }>();
+  for (const c of items ?? []) {
+    if (!c.dueDate) continue;
+    const d = new Date(c.dueDate).getDate();
+    const prev = dayMap.get(d) ?? { pending: 0, overdue: 0 };
+    if (c.isOverdue) prev.overdue++;
+    else prev.pending++;
+    dayMap.set(d, prev);
+  }
+
+  const today = new Date();
+  const firstDayOfMonth = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
+  // Offset: Monday=0 start
+  const startOffset = (firstDayOfMonth.getDay() + 6) % 7;
+  const daysInMonth = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0).getDate();
+  const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
+
+  return (
+    <div className="surface-raised rounded-xl h-full p-4 flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-2 shrink-0">
+        <Calendar className="h-4 w-4 text-primary" />
+        <span className="text-sm font-display font-semibold text-foreground">
+          {format(viewDate, "MMMM yyyy")}
+        </span>
+        <div className="ml-auto flex items-center gap-0.5">
+          <button
+            onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1))}
+            className="h-5 w-5 flex items-center justify-center rounded hover:bg-accent transition-colors"
+          >
+            <ChevronLeft className="h-3 w-3 text-muted-foreground" />
+          </button>
+          <button
+            onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1))}
+            className="h-5 w-5 flex items-center justify-center rounded hover:bg-accent transition-colors"
+          >
+            <ChevronRight className="h-3 w-3 text-muted-foreground" />
+          </button>
+        </div>
+      </div>
+
+      {/* Weekday labels */}
+      <div className="grid grid-cols-7 mb-1 shrink-0">
+        {["M", "T", "W", "T", "F", "S", "S"].map((d, i) => (
+          <div key={i} className="text-center text-[9px] font-mono text-muted-foreground/60">{d}</div>
+        ))}
+      </div>
+
+      {/* Day cells */}
+      <div className="grid grid-cols-7 gap-0.5 flex-1">
+        {Array.from({ length: totalCells }, (_, i) => {
+          const dayNum = i - startOffset + 1;
+          if (dayNum < 1 || dayNum > daysInMonth) return <div key={i} />;
+          const isToday =
+            dayNum === today.getDate() &&
+            viewDate.getMonth() === today.getMonth() &&
+            viewDate.getFullYear() === today.getFullYear();
+          const counts = dayMap.get(dayNum);
+          const hasOverdue  = (counts?.overdue ?? 0) > 0;
+          const hasPending  = (counts?.pending ?? 0) > 0;
+
+          return (
+            <Link
+              key={i}
+              href="/calendar"
+              className={`flex flex-col items-center justify-start pt-0.5 rounded transition-colors hover:bg-accent/50 ${
+                isToday ? "bg-primary/10" : ""
+              }`}
+            >
+              <span className={`text-[10px] font-mono leading-none ${
+                isToday ? "text-primary font-bold" : "text-foreground/60"
+              }`}>
+                {dayNum}
+              </span>
+              {/* Dot indicators */}
+              <div className="flex gap-0.5 mt-0.5">
+                {hasOverdue  && <div className="w-1 h-1 rounded-full bg-urgent" />}
+                {hasPending  && <div className="w-1 h-1 rounded-full bg-primary" />}
+              </div>
+            </Link>
+          );
+        })}
+      </div>
+
+      <div className="mt-2 pt-2 border-t border-border/20 shrink-0 flex items-center gap-3">
+        <div className="flex items-center gap-1">
+          <div className="w-1.5 h-1.5 rounded-full bg-urgent" />
+          <span className="text-[9px] text-muted-foreground">Overdue</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+          <span className="text-[9px] text-muted-foreground">Pending</span>
+        </div>
+        <Link href="/calendar" className="ml-auto text-[9px] text-primary hover:text-primary/80 font-medium">
+          Full view →
+        </Link>
+      </div>
     </div>
   );
 });

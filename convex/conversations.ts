@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query, internalMutation } from "./_generated/server";
+import { mutation, query, internalMutation, internalQuery } from "./_generated/server";
 
 // ============================================
 // HELPERS
@@ -307,5 +307,24 @@ export const unarchive = mutation({
       status: "active",
       updatedAt: Date.now(),
     });
+  },
+});
+
+// ============================================
+// INTERNAL QUERIES — cron + auto-summarize use
+// ============================================
+
+// Returns the single most-recent active conversation for a client.
+// Used by autoSummarizeForClient to target the freshest thread.
+export const getMostRecentActiveByClientInternal = internalQuery({
+  args: { clientId: v.id("clients") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("conversations")
+      .withIndex("by_client_status", (q) =>
+        q.eq("clientId", args.clientId).eq("status", "active")
+      )
+      .order("desc")
+      .first();
   },
 });

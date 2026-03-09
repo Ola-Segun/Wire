@@ -436,13 +436,18 @@ export default defineSchema({
     userId: v.id("users"),
     clientId: v.id("clients"),
     conversationId: v.optional(v.id("conversations")),
-    sourceMessageId: v.id("messages"),
+    sourceMessageId: v.optional(v.id("messages")), // Optional: system-generated check-ins have no source message
 
     text: v.string(),                         // "Send revised logo by Thursday"
-    type: v.string(),                         // "deadline" | "deliverable" | "payment" | "meeting"
+    type: v.string(),                         // "deadline" | "deliverable" | "payment" | "meeting" | "check_in"
     status: v.string(),                       // "pending" | "completed" | "overdue" | "cancelled"
     dueDate: v.optional(v.number()),
     dueDateConfidence: v.optional(v.string()), // "explicit" | "inferred" — how certain the due date is
+    // Time-of-day hint from AI extraction — persisted here so calendar/agenda can surface it
+    dueTimeOfDay: v.optional(v.string()),     // "morning" | "afternoon" | "evening" | "end_of_day" | "HH:MM"
+    // Recurrence support for weekly check-ins and recurring deliverables
+    recurrencePattern: v.optional(v.string()), // "weekly" | "monthly" | null
+    recurrenceEndDate: v.optional(v.number()),  // epoch ms — when recurrence stops
     completedAt: v.optional(v.number()),
     createdAt: v.number(),
     // Convex scheduler job IDs — stored so reminders can be cancelled when commitment is resolved
@@ -451,7 +456,9 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_client", ["clientId"])
     .index("by_status", ["userId", "status"])
-    .index("by_conversation", ["conversationId"]),
+    .index("by_conversation", ["conversationId"])
+    // Calendar range queries: filter by user + sort by due date
+    .index("by_user_due", ["userId", "dueDate"]),
 
   // ============================================
   // CONTRACTS / SOWs

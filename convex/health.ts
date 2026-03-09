@@ -153,12 +153,22 @@ export const updateClientHealth = internalMutation({
   args: {
     clientId: v.id("clients"),
     health: v.number(),
+    // responseTimeAvg: average inbound→outbound response time in milliseconds.
+    // Stored here so skillDispatcher.ghostingDetector can compare without
+    // fetching all messages again — it's already computed during health calc.
+    responseTimeAvg: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.clientId, {
+    const patch: Record<string, unknown> = {
       relationshipHealth: args.health,
       updatedAt: Date.now(),
-    });
+    };
+    // Only write responseTimeAvg when we have real data (> 0) to avoid
+    // overwriting a valid value with 0 on clients with no response pairs yet.
+    if (args.responseTimeAvg !== undefined && args.responseTimeAvg > 0) {
+      patch.responseTimeAvg = args.responseTimeAvg;
+    }
+    await ctx.db.patch(args.clientId, patch);
   },
 });
 
@@ -214,10 +224,15 @@ export const calculateForClient = action({
     // Clamp to 0-100
     const clampedHealth = Math.max(0, Math.min(100, health));
 
-    // Persist the health score
+    // Compute responseTimeAvg alongside health so the ghosting detector
+    // has accurate baseline data without a separate messages fetch.
+    const responseTimeAvg = calculateAvgResponseTime(messages);
+
+    // Persist health score + responseTimeAvg together in one mutation.
     await ctx.runMutation(internal.health.updateClientHealth, {
       clientId: args.clientId,
       health: clampedHealth,
+      responseTimeAvg: responseTimeAvg > 0 ? responseTimeAvg : undefined,
     });
 
     return { health: clampedHealth };
@@ -276,6 +291,13 @@ export const recalculateAll = internalAction({
           // Compute client intelligence alongside health (zero AI calls)
           await ctx.runAction(internal.ai.clientIntelligence.computeForClient, {
             clientId: client._id,
+          });
+          // Auto-summarize stale conversations (Haiku, only when skill enabled).
+          // Runs after intelligence so summarizer benefits from up-to-date intel.
+          // Errors here are non-fatal — health still updates even if summarize fails.
+          await ctx.runAction(internal.ai.onDemandSkills.autoSummarizeForClient, {
+            clientId: client._id,
+            userId: user._id,
           });
           calculated++;
         } catch {

@@ -60,11 +60,16 @@ export const createFromExtractedActions = internalMutation({
     if (args.actions.length === 0) return;
 
     const now = Date.now();
-    const dateMap = new Map<string, { resolvedTimestamp?: number; confidence: string }>();
+    const dateMap = new Map<string, {
+      resolvedTimestamp?: number;
+      confidence: string;
+      dueTimeOfDay?: string;
+    }>();
     for (const entry of args.actionsWithDates ?? []) {
       dateMap.set(entry.text, {
         resolvedTimestamp: entry.resolvedTimestamp,
         confidence: entry.confidence,
+        dueTimeOfDay: entry.dueTimeOfDay,
       });
     }
 
@@ -86,6 +91,8 @@ export const createFromExtractedActions = internalMutation({
         status: "pending",
         dueDate,
         dueDateConfidence,
+        // Persist time-of-day hint so calendar/agenda can surface it without re-reading messages
+        dueTimeOfDay: dateInfo?.dueTimeOfDay ?? undefined,
         createdAt: now,
       });
 
@@ -122,10 +129,11 @@ export const create = mutation({
   args: {
     clientId: v.id("clients"),
     conversationId: v.optional(v.id("conversations")),
-    sourceMessageId: v.id("messages"),
+    sourceMessageId: v.optional(v.id("messages")), // Optional: manual commitments may have no source message
     text: v.string(),
-    type: v.string(),     // "deadline" | "deliverable" | "payment" | "meeting"
+    type: v.string(),     // "deadline" | "deliverable" | "payment" | "meeting" | "check_in"
     dueDate: v.optional(v.number()),
+    dueTimeOfDay: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const user = await resolveUser(ctx);
@@ -145,6 +153,7 @@ export const create = mutation({
       type: args.type,
       status: "pending",
       dueDate: args.dueDate,
+      dueTimeOfDay: args.dueTimeOfDay,
       createdAt: Date.now(),
     });
   },
@@ -217,7 +226,10 @@ export const getByClient = query({
     if (filtered.length === 0) return [];
 
     // Batch-fetch unique source messages to avoid N+1
-    const uniqueMessageIds = [...new Set(filtered.map((c) => c.sourceMessageId as string))];
+    // Guard: sourceMessageId is optional (system-generated check-ins have none)
+    const uniqueMessageIds = [
+      ...new Set(filtered.filter((c) => c.sourceMessageId).map((c) => c.sourceMessageId as string)),
+    ];
     const messages = await Promise.all(
       uniqueMessageIds.map((id) => ctx.db.get(id as Id<"messages">))
     );
@@ -231,7 +243,7 @@ export const getByClient = query({
 
     return filtered.map((c) => ({
       ...c,
-      sourceMessageText: msgMap.get(c.sourceMessageId as string) ?? undefined,
+      sourceMessageText: c.sourceMessageId ? (msgMap.get(c.sourceMessageId) ?? undefined) : undefined,
     }));
   },
 });
@@ -302,7 +314,10 @@ export const getPendingWithClients = query({
     }
 
     // Batch-fetch unique source messages for context snippets
-    const uniqueMessageIds = [...new Set(commitments.map((c) => c.sourceMessageId as string))];
+    // Guard: sourceMessageId is optional (system-generated check-ins have none)
+    const uniqueMessageIds = [
+      ...new Set(commitments.filter((c) => c.sourceMessageId).map((c) => c.sourceMessageId as string)),
+    ];
     const messageDocs = await Promise.all(
       uniqueMessageIds.map((id) => ctx.db.get(id as Id<"messages">))
     );
@@ -319,7 +334,98 @@ export const getPendingWithClients = query({
       ...c,
       clientName: clientMap.get(c.clientId as string) ?? "Unknown",
       isOverdue: c.dueDate ? c.dueDate < now : false,
-      sourceMessageText: msgMap.get(c.sourceMessageId as string) ?? undefined,
+      sourceMessageText: c.sourceMessageId ? (msgMap.get(c.sourceMessageId) ?? undefined) : undefined,
+    }));
+  },
+});
+
+// Get all non-cancelled commitments within a date range — calendar grid view.
+// Returns pending + completed (for historical reference). Excludes cancelled.
+// Sorted ascending by dueDate so earliest events render first.
+export const getAllForCalendar = query({
+  args: {
+    startDate: v.number(), // epoch ms — start of visible range
+    endDate: v.number(),   // epoch ms — end of visible range
+  },
+  handler: async (ctx, args) => {
+    const user = await resolveUser(ctx);
+    if (!user) return [];
+
+    // Fetch pending and completed separately (can't use OR in Convex index)
+    const [pending, completed] = await Promise.all([
+      ctx.db
+        .query("commitments")
+        .withIndex("by_status", (q) => q.eq("userId", user._id).eq("status", "pending"))
+        .collect(),
+      ctx.db
+        .query("commitments")
+        .withIndex("by_status", (q) => q.eq("userId", user._id).eq("status", "completed"))
+        .collect(),
+    ]);
+
+    // Filter to those with a dueDate that falls within the requested range
+    const inRange = [...pending, ...completed].filter(
+      (c) => c.dueDate != null && c.dueDate >= args.startDate && c.dueDate <= args.endDate
+    );
+
+    if (inRange.length === 0) return [];
+
+    // Batch-fetch client names
+    const uniqueClientIds = [...new Set(inRange.map((c) => c.clientId as string))];
+    const clientDocs = await Promise.all(uniqueClientIds.map((id) => ctx.db.get(id as Id<"clients">)));
+    const clientMap = new Map(uniqueClientIds.map((id, i) => [id, clientDocs[i]?.name ?? "Unknown"]));
+
+    const now = Date.now();
+    return inRange
+      .map((c) => ({
+        ...c,
+        clientName: clientMap.get(c.clientId as string) ?? "Unknown",
+        isOverdue: c.dueDate ? c.dueDate < now : false,
+      }))
+      .sort((a, b) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
+  },
+});
+
+// Get today's agenda: overdue items first, then commitments due within the requested range.
+// Enriched with client names. Used by agenda_today and agenda_week widgets.
+export const getAgendaForDateRange = query({
+  args: {
+    startDate: v.number(), // epoch ms — start of range (usually start of today)
+    endDate: v.number(),   // epoch ms — end of range (today EOD or week end)
+    includeOverdue: v.optional(v.boolean()), // also include items past-due (default true)
+  },
+  handler: async (ctx, args) => {
+    const user = await resolveUser(ctx);
+    if (!user) return [];
+
+    const allPending = await ctx.db
+      .query("commitments")
+      .withIndex("by_status", (q) => q.eq("userId", user._id).eq("status", "pending"))
+      .collect();
+
+    const includeOverdue = args.includeOverdue !== false;
+    const now = Date.now();
+
+    const inRange = allPending.filter(
+      (c) => c.dueDate != null && c.dueDate >= args.startDate && c.dueDate <= args.endDate
+    );
+    const overdue = includeOverdue
+      ? allPending.filter((c) => c.dueDate != null && c.dueDate < args.startDate)
+      : [];
+
+    const combined = [...overdue, ...inRange].sort((a, b) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
+
+    if (combined.length === 0) return [];
+
+    // Batch-fetch client names
+    const uniqueClientIds = [...new Set(combined.map((c) => c.clientId as string))];
+    const clientDocs = await Promise.all(uniqueClientIds.map((id) => ctx.db.get(id as Id<"clients">)));
+    const clientMap = new Map(uniqueClientIds.map((id, i) => [id, clientDocs[i]?.name ?? "Unknown"]));
+
+    return combined.map((c) => ({
+      ...c,
+      clientName: clientMap.get(c.clientId as string) ?? "Unknown",
+      isOverdue: c.dueDate ? c.dueDate < now : false,
     }));
   },
 });

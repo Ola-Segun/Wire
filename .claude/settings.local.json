@@ -17,7 +17,17 @@
       "WebSearch",
       "WebFetch(domain:magicui.design)",
       "WebFetch(domain:ui.aceternity.com)",
-      "Bash(ls -la \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/\")"
+      "Bash(ls -la \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/\")",
+      "Bash(ls -la \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/settings/\")",
+      "Bash(xargs grep -l \"global.*search\\\\|search.*global\")",
+      "Bash(xargs grep -l \"search\")",
+      "Bash(xargs grep -l \"scope_guardian\")",
+      "Bash(ls -la /c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\\\\\(dashboard\\\\\\)/)",
+      "Bash(ls -d /c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\\\\\(dashboard\\\\\\)/*/)",
+      "Bash(xargs -I {} basename {})",
+      "Bash(head -150 \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/pulse/page.tsx\")",
+      "Bash(head -100 \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/clients/[id]/page.tsx\")",
+      "Bash(ls \"c:\\\\Users\\\\HP\\\\Documents\\\\MyDevs\\\\FreshPro\\\\Wire\\\\src\\\\app\\\\\\(dashboard\\)\")"
     ]
   }
 }

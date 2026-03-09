@@ -1,6 +1,6 @@
 "use node";
 
-import { action } from "../_generated/server";
+import { action, internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { callLLM } from "./llm";
@@ -319,6 +319,78 @@ ${threadText}`;
         toneShift: null,
         actionItems: [],
       };
+    }
+  },
+});
+
+// ============================================
+// AUTO-SUMMARIZE — Cron-driven, respects skill enablement
+// ============================================
+// Called by health.recalculateAll every 4 hours for each client.
+// Finds the client's most-recent active conversation and re-summarizes
+// it only when the conversation has grown since the last summary, or
+// no summary exists yet.
+//
+// Cost model:
+//   - 0 Claude calls when: skill disabled, conversation unchanged, or < 10 messages
+//   - 1 Haiku call (~$0.002) when a stale/missing summary is detected
+//
+// Max 1 conversation per client per cron cycle to bound costs at scale.
+
+const SUMMARIZE_MIN_MESSAGES = 10;        // Don't summarize tiny threads
+const SUMMARIZE_STALE_MS = 24 * 60 * 60 * 1000; // Re-summarize if >24h old
+
+export const autoSummarizeForClient = internalAction({
+  args: {
+    clientId: v.id("clients"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args): Promise<void> => {
+    // Respect the user's skill preference — if they've disabled
+    // thread_summarizer, automatic summarization should also stop.
+    const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+      userId: args.userId,
+      skillSlug: "thread_summarizer",
+    });
+    if (!enabled) return;
+
+    // Get the most-recent active conversation for this client.
+    // We target only the freshest thread — older ones are less actionable.
+    const conversation = await ctx.runQuery(
+      internal.conversations.getMostRecentActiveByClientInternal,
+      { clientId: args.clientId }
+    );
+    if (!conversation || conversation.messageCount < SUMMARIZE_MIN_MESSAGES) return;
+
+    // Check if an existing summary is still fresh and complete.
+    const existing = await ctx.runQuery(
+      internal.conversationSummaries.getByConversationInternal,
+      { conversationId: conversation._id }
+    );
+
+    const now = Date.now();
+    const isFresh =
+      existing &&
+      now - existing.updatedAt < SUMMARIZE_STALE_MS &&
+      existing.messageCount >= conversation.messageCount;
+
+    if (isFresh) return; // Nothing to do
+
+    // Summary is stale or missing — run the summarizer.
+    // Re-uses the public summarizeThread action so we don't duplicate the
+    // LLM prompt logic. The action also persists the result via upsert.
+    try {
+      await ctx.runAction(api.ai.onDemandSkills.summarizeThread, {
+        clientId: args.clientId,
+        conversationId: conversation._id,
+      });
+    } catch (err) {
+      // Log but don't throw — health cron must not fail because of a
+      // summarization error on a single client.
+      console.error(
+        `[AutoSummarize] Failed for client ${args.clientId}:`,
+        String(err).split("\n")[0]
+      );
     }
   },
 });

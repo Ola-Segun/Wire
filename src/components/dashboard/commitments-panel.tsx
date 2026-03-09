@@ -12,12 +12,14 @@ import {
   ChevronUp,
   Loader2,
 } from "lucide-react";
+import { getDeadlineProximity, formatTimeOfDay } from "@/lib/date-utils";
 
 const TYPE_LABELS: Record<string, { label: string; color: string }> = {
-  deadline: { label: "Deadline", color: "text-urgent bg-urgent/10" },
+  deadline:    { label: "Deadline",    color: "text-urgent bg-urgent/10" },
   deliverable: { label: "Deliverable", color: "text-primary bg-primary/10" },
-  payment: { label: "Payment", color: "text-success bg-success/10" },
-  meeting: { label: "Meeting", color: "text-chart-4 bg-chart-4/10" },
+  payment:     { label: "Payment",     color: "text-success bg-success/10" },
+  meeting:     { label: "Meeting",     color: "text-chart-4 bg-chart-4/10" },
+  check_in:    { label: "Check-in",    color: "text-muted-foreground bg-muted" },
 };
 
 interface CommitmentsPanelProps {
@@ -62,7 +64,6 @@ export const CommitmentsPanel = memo(function CommitmentsPanel({
 
   const pending = commitments.filter((c) => c.status === "pending");
   const completed = commitments.filter((c) => c.status === "completed");
-  const now = Date.now();
 
   return (
     <div className="surface-raised rounded-xl p-5">
@@ -95,7 +96,9 @@ export const CommitmentsPanel = memo(function CommitmentsPanel({
           )}
 
           {pending.map((c) => {
-            const isOverdue = c.dueDate ? c.dueDate < now : false;
+            const proximity = c.dueDate ? getDeadlineProximity(c.dueDate) : null;
+            const isOverdue = proximity?.isOverdue ?? false;
+            const timeHint = formatTimeOfDay((c as any).dueTimeOfDay);
             const typeInfo = TYPE_LABELS[c.type] ?? {
               label: c.type,
               color: "text-muted-foreground bg-muted",
@@ -107,12 +110,18 @@ export const CommitmentsPanel = memo(function CommitmentsPanel({
                 className={`flex items-start gap-3 p-3 rounded-lg border transition-all ${
                   isOverdue
                     ? "border-urgent/30 bg-urgent/5"
-                    : "border-border/30 bg-card"
+                    : proximity?.severity === "warning"
+                      ? "border-warning/20 bg-warning/5"
+                      : "border-border/30 bg-card"
                 }`}
               >
                 <Clock
                   className={`h-4 w-4 mt-0.5 shrink-0 ${
-                    isOverdue ? "text-urgent" : "text-warning"
+                    isOverdue
+                      ? "text-urgent"
+                      : proximity?.severity === "warning"
+                        ? "text-warning"
+                        : "text-muted-foreground"
                   }`}
                 />
                 <div className="flex-1 min-w-0">
@@ -125,18 +134,21 @@ export const CommitmentsPanel = memo(function CommitmentsPanel({
                     >
                       {typeInfo.label}
                     </span>
-                    {c.dueDate && (
+                    {proximity && (
                       <span
-                        className={`text-[10px] font-mono ${
-                          isOverdue
-                            ? "text-urgent font-bold"
-                            : "text-muted-foreground"
+                        className={`text-[10px] font-mono font-bold flex items-center gap-0.5 ${
+                          proximity.severity === "critical"
+                            ? "text-urgent"
+                            : proximity.severity === "warning"
+                              ? "text-warning"
+                              : "text-muted-foreground"
                         }`}
                       >
-                        {isOverdue && (
-                          <AlertTriangle className="h-2.5 w-2.5 inline mr-0.5" />
+                        {isOverdue && <AlertTriangle className="h-2.5 w-2.5" />}
+                        {proximity.label}
+                        {timeHint && !isOverdue && (
+                          <span className="text-muted-foreground font-normal ml-1">· {timeHint}</span>
                         )}
-                        Due {new Date(c.dueDate).toLocaleDateString()}
                       </span>
                     )}
                   </div>

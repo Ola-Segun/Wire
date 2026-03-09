@@ -4,6 +4,7 @@ import { useState, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { Id } from "@/convex/_generated/dataModel";
 import { useCurrentUser } from "@/hooks/use-current-user";
 import { AnimatePresence, motion } from "framer-motion";
 import SmartSearch from "@/components/dashboard/smart-search";
@@ -142,6 +143,7 @@ export default function PulsePage() {
 
   const markAsRead = useMutation(api.messages.markAsRead);
   const toggleStar = useMutation(api.messages.toggleStar);
+  const completeCommitment = useMutation(api.commitments.complete);
 
   // ─── State ──────────────────────────────────────────────────────────
   const [selectedClientId, setSelectedClientId] = useState<string | null>(null);
@@ -150,7 +152,9 @@ export default function PulsePage() {
   const [currentView, setCurrentView] = useState<View>("inbox");
   const [showSidebar, setShowSidebar] = useState(false);
   const [showThread, setShowThread] = useState(false);
-  const [checkedItems, setCheckedItems] = useState<Set<number>>(new Set());
+  // completingId: tracks which commitment is currently being completed
+  // to show a spinner on that row while the mutation is in flight.
+  const [completingId, setCompletingId] = useState<string | null>(null);
   const [showDraft, setShowDraft] = useState(false);
   const [showReplyComposer, setShowReplyComposer] = useState(false);
 
@@ -195,6 +199,24 @@ export default function PulsePage() {
     [selectedMessage, clients]
   );
 
+  // Fetch commitments for the selected message's client so action-item
+  // checkboxes write to the DB instead of dying on page refresh.
+  // "skip" when no message is selected to avoid unnecessary queries.
+  const clientCommitments = useQuery(
+    api.commitments.getByClient,
+    selectedMessage?.clientId
+      ? { clientId: selectedMessage.clientId as Id<"clients"> }
+      : "skip"
+  );
+
+  // Commitments that originated from the currently-selected message.
+  const messageCommitments = useMemo(() => {
+    if (!selectedMessage || !clientCommitments) return [];
+    return clientCommitments.filter(
+      (c: any) => c.sourceMessageId === selectedMessage._id
+    );
+  }, [selectedMessage, clientCommitments]);
+
   const unreadCount = (allMessages?.messages ?? []).filter((m: any) => !m.isRead).length ?? 0;
 
   // ─── Handlers ───────────────────────────────────────────────────────
@@ -202,7 +224,7 @@ export default function PulsePage() {
     async (id: string) => {
       setSelectedMessageId(id);
       setShowThread(true);
-      setCheckedItems(new Set());
+      setCompletingId(null);
       setShowDraft(false);
       setShowReplyComposer(false);
 
@@ -246,13 +268,20 @@ export default function PulsePage() {
     [toggleStar]
   );
 
-  const toggleActionItem = useCallback((i: number) => {
-    setCheckedItems((prev) => {
-      const next = new Set(prev);
-      next.has(i) ? next.delete(i) : next.add(i);
-      return next;
-    });
-  }, []);
+  const handleCompleteCommitment = useCallback(
+    async (commitmentId: string) => {
+      if (completingId === commitmentId) return; // already in flight
+      setCompletingId(commitmentId);
+      try {
+        await completeCommitment({ id: commitmentId as Id<"commitments"> });
+      } catch {
+        // ignore — Convex will retry; UI reverts automatically
+      } finally {
+        setCompletingId(null);
+      }
+    },
+    [completeCommitment, completingId]
+  );
 
   // ─── Nav items ──────────────────────────────────────────────────────
   const navItems: { view: View; icon: typeof Inbox; label: string; badge?: number }[] = [
@@ -718,56 +747,89 @@ export default function PulsePage() {
                           </p>
                         </div>
 
-                        {/* Action items */}
-                        {selectedMessage.aiMetadata?.extractedActions &&
-                          selectedMessage.aiMetadata.extractedActions.length > 0 && (
-                            <div className="rounded-xl border border-primary/15 bg-primary/[0.03] p-5">
-                              <div className="flex items-center gap-2 mb-4">
-                                <div className="w-6 h-6 rounded-md bg-primary/10 flex items-center justify-center">
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-primary" />
-                                </div>
-                                <span className="text-xs font-display font-semibold text-primary">
-                                  Action Items
-                                </span>
-                                <span className="text-[10px] font-mono text-primary/50 ml-auto">
-                                  {checkedItems.size}/
-                                  {selectedMessage.aiMetadata.extractedActions.length}
-                                </span>
+                        {/* Action items — DB-backed via commitments table */}
+                        {(messageCommitments.length > 0 ||
+                          (selectedMessage.aiMetadata?.extractedActions &&
+                            selectedMessage.aiMetadata.extractedActions.length > 0)) && (
+                          <div className="rounded-xl border border-primary/15 bg-primary/[0.03] p-5">
+                            <div className="flex items-center gap-2 mb-4">
+                              <div className="w-6 h-6 rounded-md bg-primary/10 flex items-center justify-center">
+                                <CheckCircle2 className="w-3.5 h-3.5 text-primary" />
                               </div>
-                              <ul className="space-y-2.5">
-                                {selectedMessage.aiMetadata.extractedActions.map(
-                                  (item: string, i: number) => (
-                                    <li
-                                      key={i}
-                                      className="flex items-start gap-3 group cursor-pointer"
-                                      onClick={() => toggleActionItem(i)}
-                                    >
-                                      <div
-                                        className={`w-[18px] h-[18px] rounded-md border mt-0.5 shrink-0 flex items-center justify-center transition-all ${
-                                          checkedItems.has(i)
-                                            ? "bg-primary border-primary text-primary-foreground"
-                                            : "border-border hover:border-primary/40"
-                                        }`}
-                                      >
-                                        {checkedItems.has(i) && (
-                                          <CheckCircle2 className="w-3 h-3" />
-                                        )}
-                                      </div>
-                                      <span
-                                        className={`text-sm transition-all ${
-                                          checkedItems.has(i)
-                                            ? "text-muted-foreground line-through"
-                                            : "text-foreground"
-                                        }`}
-                                      >
-                                        {item}
-                                      </span>
-                                    </li>
-                                  )
-                                )}
-                              </ul>
+                              <span className="text-xs font-display font-semibold text-primary">
+                                Action Items
+                              </span>
+                              {messageCommitments.length > 0 && (
+                                <span className="text-[10px] font-mono text-primary/50 ml-auto">
+                                  {messageCommitments.filter((c: any) => c.status === "completed").length}/
+                                  {messageCommitments.length} done
+                                </span>
+                              )}
                             </div>
-                          )}
+                            <ul className="space-y-2.5">
+                              {messageCommitments.length > 0
+                                ? // Render real commitment records with DB-persisted state
+                                  messageCommitments.map((commitment: any) => {
+                                    const isDone = commitment.status === "completed";
+                                    const isCompleting = completingId === commitment._id;
+                                    return (
+                                      <li
+                                        key={commitment._id}
+                                        className={`flex items-start gap-3 group ${isDone ? "cursor-default" : "cursor-pointer"}`}
+                                        onClick={() => !isDone && handleCompleteCommitment(commitment._id)}
+                                      >
+                                        <div
+                                          className={`w-[18px] h-[18px] rounded-md border mt-0.5 shrink-0 flex items-center justify-center transition-all ${
+                                            isDone
+                                              ? "bg-success/20 border-success/40 text-success"
+                                              : isCompleting
+                                                ? "bg-primary/10 border-primary/40"
+                                                : "border-border group-hover:border-primary/40"
+                                          }`}
+                                        >
+                                          {isCompleting ? (
+                                            <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                                          ) : isDone ? (
+                                            <CheckCircle2 className="w-3 h-3" />
+                                          ) : null}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          <span
+                                            className={`text-sm transition-all ${
+                                              isDone
+                                                ? "text-muted-foreground line-through"
+                                                : "text-foreground"
+                                            }`}
+                                          >
+                                            {commitment.text}
+                                          </span>
+                                          {commitment.dueDate && !isDone && (
+                                            <p className={`text-[10px] font-mono mt-0.5 ${
+                                              commitment.dueDate < Date.now()
+                                                ? "text-urgent"
+                                                : "text-muted-foreground"
+                                            }`}>
+                                              Due {new Date(commitment.dueDate).toLocaleDateString()}
+                                              {commitment.dueDate < Date.now() ? " · Overdue" : ""}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </li>
+                                    );
+                                  })
+                                : // Fallback: show raw extractedActions as read-only when no
+                                  // commitment records exist (pre-extraction messages)
+                                  (selectedMessage.aiMetadata?.extractedActions ?? []).map(
+                                    (item: string, i: number) => (
+                                      <li key={i} className="flex items-start gap-3">
+                                        <div className="w-[18px] h-[18px] rounded-md border border-border mt-0.5 shrink-0" />
+                                        <span className="text-sm text-muted-foreground">{item}</span>
+                                      </li>
+                                    )
+                                  )}
+                            </ul>
+                          </div>
+                        )}
 
                         {/* AI Draft / Reply composer */}
                         {showReplyComposer && selectedClient ? (

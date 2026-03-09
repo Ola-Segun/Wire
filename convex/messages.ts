@@ -399,6 +399,42 @@ export const getByClientInternal = internalQuery({
   },
 });
 
+// Internal query: most recent inbound messages for a client.
+// Used by crisis mode detector to check consecutive negative sentiment.
+export const getRecentInboundByClient = internalQuery({
+  args: {
+    clientId: v.id("clients"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_client", (q) => q.eq("clientId", args.clientId))
+      .order("desc")
+      .take(args.limit ?? 5);
+    return messages.filter((m) => m.direction === "inbound");
+  },
+});
+
+// Internal query: recent outbound messages for a client after a timestamp.
+// Used by revenue leakage detector to check if a follow-up was sent.
+export const getRecentOutboundAfter = internalQuery({
+  args: {
+    clientId: v.id("clients"),
+    after: v.number(),
+  },
+  handler: async (ctx, args) => {
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_client", (q) => q.eq("clientId", args.clientId))
+      .order("desc")
+      .take(20);
+    return messages.filter(
+      (m) => m.direction === "outbound" && m.timestamp >= args.after
+    );
+  },
+});
+
 // Search messages by text (uses the search_text index) — N+1 fixed
 export const search = query({
   args: {
@@ -426,5 +462,50 @@ export const search = query({
 
     const clientMap = await buildClientNameMap(ctx, messages);
     return enrichWithClientNames(messages, clientMap);
+  },
+});
+
+// ============================================
+// SENTIMENT DATA — lightweight chart feed
+// ============================================
+// Returns per-message sentiment data points for a client, oldest-first.
+// Used by the SentimentTrajectoryChart component. Only inbound messages
+// with AI-analyzed sentiment are returned — outbound messages are
+// excluded because the freelancer's own replies aren't sentiment signals.
+//
+// Returns a compact shape to minimise bandwidth (no full message text).
+
+export const getSentimentData = query({
+  args: {
+    clientId: v.id("clients"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+
+    const cap = Math.min(args.limit ?? 40, 100);
+
+    // Fetch most-recent messages, then reverse for chronological order
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_client", (q) => q.eq("clientId", args.clientId))
+      .order("desc")
+      .take(cap);
+
+    return messages
+      .reverse()
+      .filter(
+        (m) =>
+          m.direction === "inbound" &&
+          m.aiMetadata?.sentiment &&
+          m.aiMetadata.sentiment.length > 0
+      )
+      .map((m) => ({
+        timestamp: m.timestamp,
+        sentiment: m.aiMetadata!.sentiment as string,
+        // Short preview for tooltip — no full text transmitted
+        preview: m.text.length > 70 ? m.text.slice(0, 70) + "…" : m.text,
+      }));
   },
 });

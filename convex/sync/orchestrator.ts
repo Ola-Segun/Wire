@@ -13,9 +13,12 @@ const MAX_AI_CONCURRENCY = 2;
 const MAX_RETRIES = 2;
 
 // Only sync users who have been active within these windows.
-// Keeps cron work at zero when no users are online.
-const SYNC_ACTIVE_WINDOW_MS = 30 * 60 * 1000;  // 30 minutes
-const AI_ACTIVE_WINDOW_MS   = 60 * 60 * 1000;  // 60 minutes
+// The sync window must be wide enough to ensure freelancers who step away
+// for lunch or a meeting still receive messages when they return.
+// 4 h covers a half-day gap; AI window stays at 6 h so analysis catches up
+// on messages that arrive while the user is offline.
+const SYNC_ACTIVE_WINDOW_MS = 4 * 60 * 60 * 1000;   // 4 hours  (was 30 min)
+const AI_ACTIVE_WINDOW_MS   = 6 * 60 * 60 * 1000;   // 6 hours  (was 60 min)
 
 // ============================================
 // Dynamic Platform Sync Registry

@@ -65,6 +65,8 @@ export const runCronSkills = internalAction({
         runCommitmentWatchdog(ctx, user._id),
         runGhostingDetector(ctx, user._id),
         runPaymentSentinel(ctx, user._id),
+        runRevenueLeakageDetector(ctx, user._id),
+        runCrisisMode(ctx, user._id),
       ]);
     }
   },
@@ -439,6 +441,146 @@ async function runPaymentSentinel(ctx: any, userId: any) {
     actionable: true,
     expiresAt: Date.now() + 24 * 60 * 60 * 1000,
   });
+}
+
+// --- Revenue Leakage Detector ---
+// Extends Payment Sentinel: cross-references overdue payment commitments with
+// recent outbound messages. If no follow-up was sent after a payment was due,
+// escalates to a "critical" leakage alert. Zero AI calls — pure DB logic.
+async function runRevenueLeakageDetector(ctx: any, userId: any) {
+  const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+    userId,
+    skillSlug: "payment_sentinel",
+  });
+  if (!enabled) return;
+
+  const pending: any[] = await ctx.runQuery(
+    internal.commitments.getPendingInternal,
+    { userId }
+  );
+
+  const now = Date.now();
+  const FOLLOW_UP_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours after due date
+
+  const overduePayments = pending.filter(
+    (c) => c.type === "payment" && c.dueDate && c.dueDate < now
+  );
+
+  for (const commitment of overduePayments) {
+    // Check if the freelancer sent any message to this client since the due date
+    const outboundMessages: any[] = await ctx.runQuery(
+      internal.messages.getRecentOutboundAfter,
+      {
+        clientId: commitment.clientId,
+        after: (commitment.dueDate as number) - FOLLOW_UP_WINDOW_MS,
+      }
+    );
+
+    // If a follow-up was already sent, this is being handled — skip
+    if (outboundMessages.length > 0) continue;
+
+    // No follow-up sent → revenue leakage risk
+    const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
+      userId,
+      skillSlug: "payment_sentinel",
+      clientId: commitment.clientId,
+      withinMs: 72 * 60 * 60 * 1000,
+    });
+    if (recent) continue;
+
+    const daysOverdue = Math.round((now - (commitment.dueDate as number)) / (24 * 60 * 60 * 1000));
+
+    await ctx.runMutation(internal.skills.createOutput, {
+      userId,
+      skillSlug: "payment_sentinel",
+      clientId: commitment.clientId,
+      type: "alert",
+      severity: "critical",
+      title: `Revenue leakage: unacknowledged payment (${daysOverdue}d overdue)`,
+      content: `"${commitment.text}" is overdue with no follow-up message sent. Follow up now to recover this payment.`,
+      metadata: {
+        type: "revenue_leakage",
+        commitmentText: commitment.text,
+        dueDate: commitment.dueDate,
+        daysOverdue,
+      },
+      actionable: true,
+      expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+    });
+  }
+}
+
+// --- Crisis Mode Detector ---
+// Runs as a cron skill. When a client has high aggregate churn risk AND the
+// last 2+ consecutive inbound messages contain negative sentiment,
+// escalates churn_predictor to critical and surfaces a recovery template.
+// Zero AI calls — reads existing aiMetadata from DB.
+const CRISIS_NEGATIVE_SENTIMENTS = new Set(["negative", "frustrated", "angry"]);
+
+async function runCrisisMode(ctx: any, userId: any) {
+  const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+    userId,
+    skillSlug: "churn_predictor",
+  });
+  if (!enabled) return;
+
+  const clients: any[] = await ctx.runQuery(
+    internal.clients.getActiveByUserInternal,
+    { userId }
+  );
+
+  for (const client of clients) {
+    // Only check clients with high aggregate churn risk
+    if (client.intelligence?.aggregateChurnRisk !== "high") continue;
+
+    // Fetch last 5 inbound messages; need 2+ consecutive negative
+    const recentInbound: any[] = await ctx.runQuery(
+      internal.messages.getRecentInboundByClient,
+      { clientId: client._id, limit: 5 }
+    );
+
+    if (recentInbound.length < 2) continue;
+
+    // Check if the last 2 consecutive inbound messages are negative
+    const lastTwo = recentInbound.slice(0, 2);
+    const allNegative = lastTwo.every((m: any) =>
+      CRISIS_NEGATIVE_SENTIMENTS.has(m.aiMetadata?.sentiment ?? "")
+    );
+    if (!allNegative) continue;
+
+    // Dedup: 72-hour window to avoid repeated alerts
+    const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
+      userId,
+      skillSlug: "churn_predictor",
+      clientId: client._id,
+      withinMs: 72 * 60 * 60 * 1000,
+    });
+    if (recent) continue;
+
+    // Build a personalised recovery template with the client's first name
+    const firstName = client.name.split(" ")[0];
+    const recoveryTemplate =
+      `Hi ${firstName},\n\nI wanted to personally reach out — I sense our recent conversations may not have fully met your expectations, and I take that seriously.\n\nI'd love to schedule a quick 15-minute call this week to make sure we're aligned and to address any concerns you have. What time works best for you?\n\nBest,`;
+
+    await ctx.runMutation(internal.skills.createOutput, {
+      userId,
+      skillSlug: "churn_predictor",
+      clientId: client._id,
+      type: "alert",
+      severity: "critical",
+      title: `Crisis mode: ${client.name} — immediate outreach needed`,
+      content: `High churn risk + 2 consecutive negative messages. A recovery message has been drafted — send it now.`,
+      metadata: {
+        crisisMode: true,
+        churnRisk: "high",
+        clientName: client.name,
+        recoveryTemplate,
+        negativeMessageCount: lastTwo.length,
+      },
+      actionable: true,
+      expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+    });
+  }
 }
 
 // ============================================

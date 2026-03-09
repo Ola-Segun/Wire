@@ -25,7 +25,11 @@ import {
   Archive,
   ArchiveRestore,
   Phone,
+  Edit2,
+  Check,
+  X,
 } from "lucide-react";
+import { SentimentTrajectoryChart } from "@/components/dashboard/sentiment-trajectory-chart";
 import { formatRelativeTime, formatMessageTime } from "@/lib/date-utils";
 import dynamic from "next/dynamic";
 import type { PendingMessage } from "@/components/dashboard/reply-composer";
@@ -63,6 +67,18 @@ export default function ClientDetailPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [unlinkingId, setUnlinkingId] = useState<string | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const [messageLimit, setMessageLimit] = useState(50);
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    company: "",
+    primaryEmail: "",
+    primaryPhone: "",
+    totalRevenue: "",
+    tags: "",
+    notes: "",
+  });
+  const [savingProfile, setSavingProfile] = useState(false);
 
   const handleOptimisticSend = useCallback((pending: PendingMessage) => {
     setPendingMessages((prev) => [...prev, pending]);
@@ -85,13 +101,18 @@ export default function ClientDetailPage() {
   const identities = useQuery(api.identities.getByClient, {
     clientId: clientId as any,
   });
-  const messagesResult = useQuery(api.messages.getByClient, {
-    clientId: clientId as any,
-    limit: 100,
-  });
+  const queryArgs = useMemo(
+    () => ({ clientId: clientId as any, limit: messageLimit }),
+    [clientId, messageLimit]
+  );
+  const messagesResult = useQuery(api.messages.getByClient, queryArgs);
   const messages = messagesResult?.messages ?? undefined;
+  const hasMore = messagesResult?.hasMore ?? false;
+  const sentimentData = useQuery(api.messages.getSentimentData, {
+    clientId: clientId as any,
+  });
+  const updateClient = useMutation(api.clients.update);
 
-  const queryArgs = { clientId: clientId as any, limit: 100 };
   const toggleStar = useMutation(api.messages.toggleStar).withOptimisticUpdate(
     (localStore, args) => {
       const result = localStore.getQuery(api.messages.getByClient, queryArgs);
@@ -164,6 +185,46 @@ export default function ClientDetailPage() {
       setArchiving(false);
     }
   }, [client, clientId, archiveClient, unarchiveClient]);
+
+  const handleEditStart = useCallback(() => {
+    if (!client) return;
+    setEditForm({
+      name: client.name ?? "",
+      company: client.company ?? "",
+      primaryEmail: client.primaryEmail ?? "",
+      primaryPhone: client.primaryPhone ?? "",
+      totalRevenue: client.totalRevenue?.toString() ?? "",
+      tags: client.tags?.join(", ") ?? "",
+      notes: client.notes ?? "",
+    });
+    setEditMode(true);
+  }, [client]);
+
+  const handleEditSave = useCallback(async () => {
+    setSavingProfile(true);
+    try {
+      await updateClient({
+        id: clientId as any,
+        name: editForm.name || undefined,
+        company: editForm.company || undefined,
+        primaryEmail: editForm.primaryEmail || undefined,
+        primaryPhone: editForm.primaryPhone || undefined,
+        totalRevenue: editForm.totalRevenue
+          ? parseFloat(editForm.totalRevenue)
+          : undefined,
+        tags: editForm.tags
+          ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean)
+          : undefined,
+        notes: editForm.notes || undefined,
+      });
+      setEditMode(false);
+      toast.success("Profile updated");
+    } catch {
+      toast.error("Failed to save changes");
+    } finally {
+      setSavingProfile(false);
+    }
+  }, [clientId, editForm, updateClient]);
 
   // Merge real messages with optimistic pending messages — memoized
   // Must be before any early returns to satisfy Rules of Hooks
@@ -413,48 +474,130 @@ export default function ClientDetailPage() {
 
           {/* Client Details */}
           <div className="surface-raised rounded-xl p-5 space-y-3">
-            <h3 className="text-sm font-display font-semibold text-foreground mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-              Details
-            </h3>
-            {client.primaryEmail && (
-              <DetailRow label="Email" value={client.primaryEmail} />
-            )}
-            {client.primaryPhone && (
-              <DetailRow label="Phone" value={client.primaryPhone} />
-            )}
-            <DetailRow
-              label="First Contact"
-              value={new Date(client.firstContactDate).toLocaleDateString()}
-            />
-            <DetailRow
-              label="Last Contact"
-              value={formatRelativeTime(client.lastContactDate)}
-            />
-            {client.tags && client.tags.length > 0 && (
-              <div>
-                <p className="text-[10px] font-mono text-muted-foreground mb-1">
-                  Tags
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  {client.tags.map((tag: string) => (
-                    <span
-                      key={tag}
-                      className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-border text-muted-foreground"
-                    >
-                      {tag}
-                    </span>
-                  ))}
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-display font-semibold text-foreground flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                Details
+              </h3>
+              {!editMode ? (
+                <button
+                  onClick={handleEditStart}
+                  className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Edit2 className="h-3 w-3" /> Edit
+                </button>
+              ) : (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={handleEditSave}
+                    disabled={savingProfile}
+                    className="flex items-center gap-1 text-[10px] font-medium text-success hover:text-success/80 transition-colors disabled:opacity-50"
+                  >
+                    {savingProfile ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Check className="h-3 w-3" />
+                    )}
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setEditMode(false)}
+                    disabled={savingProfile}
+                    className="flex items-center gap-1 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50 ml-2"
+                  >
+                    <X className="h-3 w-3" /> Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {editMode ? (
+              <div className="space-y-3">
+                <EditField
+                  label="Name"
+                  value={editForm.name}
+                  onChange={(v) => setEditForm((f) => ({ ...f, name: v }))}
+                />
+                <EditField
+                  label="Company"
+                  value={editForm.company}
+                  onChange={(v) => setEditForm((f) => ({ ...f, company: v }))}
+                  placeholder="e.g. Acme Corp"
+                />
+                <EditField
+                  label="Email"
+                  value={editForm.primaryEmail}
+                  onChange={(v) => setEditForm((f) => ({ ...f, primaryEmail: v }))}
+                  type="email"
+                />
+                <EditField
+                  label="Phone"
+                  value={editForm.primaryPhone}
+                  onChange={(v) => setEditForm((f) => ({ ...f, primaryPhone: v }))}
+                  type="tel"
+                />
+                <EditField
+                  label="Revenue ($)"
+                  value={editForm.totalRevenue}
+                  onChange={(v) => setEditForm((f) => ({ ...f, totalRevenue: v }))}
+                  type="number"
+                  placeholder="0"
+                />
+                <EditField
+                  label="Tags"
+                  value={editForm.tags}
+                  onChange={(v) => setEditForm((f) => ({ ...f, tags: v }))}
+                  placeholder="comma-separated"
+                />
+                <div>
+                  <p className="text-[10px] font-mono text-muted-foreground mb-1">Notes</p>
+                  <textarea
+                    rows={3}
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))}
+                    className="w-full text-sm bg-accent/30 border border-border/50 rounded-lg px-2.5 py-2 focus:outline-none focus:ring-1 focus:ring-primary/40 resize-none text-foreground placeholder:text-muted-foreground"
+                    placeholder="Internal notes about this client…"
+                  />
                 </div>
               </div>
-            )}
-            {client.notes && (
-              <div>
-                <p className="text-[10px] font-mono text-muted-foreground mb-1">
-                  Notes
-                </p>
-                <p className="text-sm text-foreground/80">{client.notes}</p>
-              </div>
+            ) : (
+              <>
+                {client.primaryEmail && (
+                  <DetailRow label="Email" value={client.primaryEmail} />
+                )}
+                {client.primaryPhone && (
+                  <DetailRow label="Phone" value={client.primaryPhone} />
+                )}
+                <DetailRow
+                  label="First Contact"
+                  value={new Date(client.firstContactDate).toLocaleDateString()}
+                />
+                <DetailRow
+                  label="Last Contact"
+                  value={formatRelativeTime(client.lastContactDate)}
+                />
+                {client.tags && client.tags.length > 0 && (
+                  <div>
+                    <p className="text-[10px] font-mono text-muted-foreground mb-1">Tags</p>
+                    <div className="flex flex-wrap gap-1">
+                      {client.tags.map((tag: string) => (
+                        <span
+                          key={tag}
+                          className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-border text-muted-foreground"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {client.notes && (
+                  <div>
+                    <p className="text-[10px] font-mono text-muted-foreground mb-1">Notes</p>
+                    <p className="text-sm text-foreground/80">{client.notes}</p>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -472,6 +615,22 @@ export default function ClientDetailPage() {
 
           {/* Thread Summary */}
           <ThreadSummaryPanel clientId={clientId} clientName={client.name} />
+
+          {/* Sentiment Trajectory */}
+          {sentimentData && sentimentData.length >= 3 && (
+            <div className="surface-raised rounded-xl p-5">
+              <h3 className="text-sm font-display font-semibold text-foreground mb-3 flex items-center gap-2">
+                <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                Sentiment Trajectory
+              </h3>
+              <SentimentTrajectoryChart
+                data={sentimentData}
+                intelligenceTrend={client.intelligence?.sentimentTrend}
+                height={110}
+                showXAxis={false}
+              />
+            </div>
+          )}
         </div>
 
         {/* Right: Conversation Timeline */}
@@ -583,6 +742,19 @@ export default function ClientDetailPage() {
                 <div className="text-center py-12 text-muted-foreground">
                   <MessageSquare className="h-12 w-12 mx-auto mb-3 text-muted-foreground/30" />
                   <p>No messages yet</p>
+                </div>
+              )}
+
+              {/* Load older messages */}
+              {hasMore && (
+                <div className="flex justify-center pt-2 pb-1">
+                  <button
+                    onClick={() => setMessageLimit((l) => l + 50)}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-[11px] font-medium text-muted-foreground hover:text-foreground border border-border/40 hover:border-border hover:bg-accent/50 transition-colors"
+                  >
+                    <ChevronDown className="h-3.5 w-3.5" />
+                    Load older messages
+                  </button>
                 </div>
               )}
 
@@ -820,6 +992,33 @@ const DetailRow = memo(function DetailRow({ label, value }: { label: string; val
     <div>
       <p className="text-[10px] font-mono text-muted-foreground">{label}</p>
       <p className="text-sm text-foreground">{value}</p>
+    </div>
+  );
+});
+
+const EditField = memo(function EditField({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <div>
+      <p className="text-[10px] font-mono text-muted-foreground mb-1">{label}</p>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full text-sm bg-accent/30 border border-border/50 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-primary/40 text-foreground placeholder:text-muted-foreground"
+      />
     </div>
   );
 });

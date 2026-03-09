@@ -14,12 +14,14 @@ import {
   X,
   Activity,
   Brain,
+  CalendarDays,
 } from "lucide-react";
 import { healthColor, healthBg } from "@/lib/helpers";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/workspace", label: "Workspace", icon: LayoutGrid },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/pulse", label: "Pulse", icon: Activity },
   { href: "/inbox", label: "Inbox", icon: Inbox },
   { href: "/clients", label: "Clients", icon: Users },
