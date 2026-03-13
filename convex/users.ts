@@ -238,7 +238,10 @@ export const getAllForSync = query({
   },
 });
 
-// Update lastActiveAt to track user presence (called from frontend on mount/navigation)
+// Update lastActiveAt to track user presence (called from frontend on mount/navigation).
+// Server-side debounce: skip the write if lastActiveAt was updated less than 5 minutes
+// ago. This prevents the write→invalidation→re-render→write cascade that caused
+// thousands of redundant query re-executions and gigabytes of unnecessary reads.
 export const touch = mutation({
   args: {},
   handler: async (ctx) => {
@@ -250,9 +253,14 @@ export const touch = mutation({
       .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
       .first();
 
-    if (user) {
-      await ctx.db.patch(user._id, { lastActiveAt: Date.now() });
+    if (!user) return;
+
+    const FIVE_MINUTES = 5 * 60 * 1000;
+    if (user.lastActiveAt && Date.now() - user.lastActiveAt < FIVE_MINUTES) {
+      return; // No write → no document change → no query invalidation
     }
+
+    await ctx.db.patch(user._id, { lastActiveAt: Date.now() });
   },
 });
 

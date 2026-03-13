@@ -43,6 +43,7 @@ interface AiMetadata {
   churnRisk?: string;
   clientIntent?: string;
   valueSignal?: string | null;
+  projectPhase?: string;
 }
 
 interface ReplyComposerProps {
@@ -201,6 +202,10 @@ export function ReplyComposer({
   const [isDrafting, setIsDrafting] = useState(false);
   const [draftOptions, setDraftOptions] = useState<{ label: string; text: string }[]>([]);
   const [showDraftPicker, setShowDraftPicker] = useState(false);
+  const [draftRateLimited, setDraftRateLimited] = useState(false);
+  const [draftRemaining, setDraftRemaining] = useState<number | null>(null);
+  const [draftFailed, setDraftFailed] = useState(false);
+  const [draftSkillDisabled, setDraftSkillDisabled] = useState(false);
 
   // Tracks which chip was last selected while textarea was in "starter state".
   // Allows the next chip click to replace the previous one cleanly.
@@ -218,6 +223,7 @@ export function ReplyComposer({
   const rewriteWithTone  = useAction(api.ai["writing_assistant"].rewriteWithTone);
   const adjustFormality  = useAction(api.ai["writing_assistant"].adjustFormality);
   const simplifyClarify  = useAction(api.ai["writing_assistant"].simplifyClarify);
+  const fixGrammar       = useAction(api.ai["writing_assistant"].fixGrammar);
   const generateReplies  = useAction(api.ai.onDemandSkills.generateSmartReplies);
   const sendGmail        = useAction(api.send.gmail.sendMessage);
   const sendSlack        = useAction(api.send.slack.sendMessage);
@@ -276,13 +282,14 @@ export function ReplyComposer({
     }
   }, [text, starterChip, insertAtCursor]);
 
-  // Debounced analysis — always runs in the background as the user types.
+  // Debounced analysis — runs in the background as the user types.
   // Results are cached in `analysis` state and displayed whenever the panel is open.
-  // The panel does NOT need to be open for analysis to run — it just needs text ≥ 10 chars.
+  // Minimum 20 chars before triggering (avoids firing on very short starters).
+  // 1500ms debounce reduces API calls by ~50% vs the previous 700ms.
   const triggerAnalysis = useCallback(
     (content: string) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      if (content.length < 10) { setAnalysis(null); return; }
+      if (content.length < 20) { setAnalysis(null); return; }
 
       debounceRef.current = setTimeout(async () => {
         setIsAnalyzing(true);
@@ -298,7 +305,7 @@ export function ReplyComposer({
         } finally {
           setIsAnalyzing(false);
         }
-      }, 700);
+      }, 1500);
     },
     [analyzeWriting, client._id, message.text]
   );
@@ -328,10 +335,19 @@ export function ReplyComposer({
         });
       } else if (action === "simplify") {
         newText = await simplifyClarify({ text });
+      } else if (action === "fix_grammar") {
+        const errors = (analysis?.grammar?.errors as Array<{ errorText: string; suggestions: string[] }> | undefined)
+          ?.map((e) => ({ errorText: e.errorText, suggestions: e.suggestions ?? [] }));
+        newText = await fixGrammar({ text, errors });
       } else if (action === "fix_all") {
-        // Fix grammar + clarify in sequence — single perceived action for user
-        const fixed = await simplifyClarify({ text });
-        newText = await rewriteWithTone({ text: fixed, targetTone: "professional" });
+        // Grammar → clarify → tone, in sequence
+        const grammarFixed = await fixGrammar({
+          text,
+          errors: (analysis?.grammar?.errors as Array<{ errorText: string; suggestions: string[] }> | undefined)
+            ?.map((e) => ({ errorText: e.errorText, suggestions: e.suggestions ?? [] })),
+        });
+        const clarified = await simplifyClarify({ text: grammarFixed });
+        newText = await rewriteWithTone({ text: clarified, targetTone: "professional" });
       }
       if (typeof newText === "string") {
         setText(newText);
@@ -346,16 +362,34 @@ export function ReplyComposer({
 
   // AI Draft — generate 3 labeled options using generateSmartReplies
   const handleAIDraft = async () => {
+    if (draftRateLimited) return;
     setIsDrafting(true);
     setShowDraftPicker(false);
+    setDraftFailed(false);
+    setDraftSkillDisabled(false);
     try {
       const result = await generateReplies({ messageId: message._id as any });
+      if (result.skillDisabled) {
+        setDraftSkillDisabled(true);
+        return;
+      }
+      if (result.rateLimited) {
+        setDraftRateLimited(true);
+        setDraftRemaining(0);
+        return;
+      }
+      if (result.remainingToday !== undefined) {
+        setDraftRemaining(result.remainingToday);
+      }
       if (result.replies.length > 0) {
         setDraftOptions(result.replies);
         setShowDraftPicker(true);
+      } else {
+        setDraftFailed(true);
       }
     } catch (err) {
       console.error("AI Draft failed:", err);
+      setDraftFailed(true);
     } finally {
       setIsDrafting(false);
     }
@@ -559,6 +593,24 @@ export function ReplyComposer({
               <p className="text-xs text-slate-600 leading-snug">{opt.text}</p>
             </button>
           ))}
+        </div>
+      )}
+
+      {/* ── 5b. Draft failed / skill disabled notice ─────────────────── */}
+      {draftSkillDisabled && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 border border-amber-100 text-xs text-amber-700">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          Smart Replies is disabled. Enable it in{" "}
+          <a href="/skills" className="underline font-medium hover:text-amber-800">
+            Settings → Skills
+          </a>
+          .
+        </div>
+      )}
+      {draftFailed && !showDraftPicker && !draftSkillDisabled && (
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-100 text-xs text-red-600">
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          Couldn&apos;t generate drafts — please try again.
         </div>
       )}
 
@@ -877,20 +929,34 @@ export function ReplyComposer({
 
       {/* ── 10. Action bar ────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleAIDraft}
-          disabled={isDrafting || isSending}
-          className="text-xs"
-        >
-          {isDrafting ? (
-            <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-          ) : (
-            <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleAIDraft}
+            disabled={isDrafting || isSending || draftRateLimited}
+            className="text-xs"
+            title={draftRateLimited ? "Daily AI Draft limit reached. Resets tomorrow." : undefined}
+          >
+            {isDrafting ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+            )}
+            {isDrafting ? "Drafting…" : draftRateLimited ? "Limit reached" : "AI Draft"}
+          </Button>
+          {/* Show remaining daily uses — only when we have a count and not rate-limited */}
+          {!draftRateLimited && draftRemaining !== null && draftRemaining <= 5 && (
+            <span className="text-[10px] text-amber-500 font-medium">
+              {draftRemaining} left today
+            </span>
           )}
-          {isDrafting ? "Drafting…" : "AI Draft"}
-        </Button>
+          {draftRateLimited && (
+            <span className="text-[10px] text-red-500 font-medium">
+              Resets tomorrow
+            </span>
+          )}
+        </div>
 
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={onClose} className="text-xs">

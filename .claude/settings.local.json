@@ -27,7 +27,12 @@
       "Bash(xargs -I {} basename {})",
       "Bash(head -150 \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/pulse/page.tsx\")",
       "Bash(head -100 \"/c/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/clients/[id]/page.tsx\")",
-      "Bash(ls \"c:\\\\Users\\\\HP\\\\Documents\\\\MyDevs\\\\FreshPro\\\\Wire\\\\src\\\\app\\\\\\(dashboard\\)\")"
+      "Bash(ls \"c:\\\\Users\\\\HP\\\\Documents\\\\MyDevs\\\\FreshPro\\\\Wire\\\\src\\\\app\\\\\\(dashboard\\)\")",
+      "Bash(grep -rn '\"\"\\\\[-:\\\\|\\\\\\\\]\"\"' \"c:/Users/HP/Documents/MyDevs/FreshPro/Wire/UI\")",
+      "WebFetch(domain:uselayouts.com)",
+      "Bash(grep -E '\"\"date-fns|framer-motion|lucide-react\"\"' package.json)",
+      "WebFetch(domain:motion-primitives.com)",
+      "Bash(tail -5 \"c:/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/dashboard/page.tsx\")"
     ]
   }
 }

@@ -342,6 +342,10 @@ export const getPendingWithClients = query({
 // Get all non-cancelled commitments within a date range — calendar grid view.
 // Returns pending + completed (for historical reference). Excludes cancelled.
 // Sorted ascending by dueDate so earliest events render first.
+//
+// OPTIMISED: uses by_user_due index for a bounded date-range read instead of
+// scanning ALL pending + ALL completed records and filtering in memory.
+// Previous version: O(n) full-table scans × 2.  New version: O(range) only.
 export const getAllForCalendar = query({
   args: {
     startDate: v.number(), // epoch ms — start of visible range
@@ -351,22 +355,17 @@ export const getAllForCalendar = query({
     const user = await resolveUser(ctx);
     if (!user) return [];
 
-    // Fetch pending and completed separately (can't use OR in Convex index)
-    const [pending, completed] = await Promise.all([
-      ctx.db
-        .query("commitments")
-        .withIndex("by_status", (q) => q.eq("userId", user._id).eq("status", "pending"))
-        .collect(),
-      ctx.db
-        .query("commitments")
-        .withIndex("by_status", (q) => q.eq("userId", user._id).eq("status", "completed"))
-        .collect(),
-    ]);
-
-    // Filter to those with a dueDate that falls within the requested range
-    const inRange = [...pending, ...completed].filter(
-      (c) => c.dueDate != null && c.dueDate >= args.startDate && c.dueDate <= args.endDate
-    );
+    // Single index scan: only records whose dueDate falls inside the window.
+    // Records with dueDate=undefined are excluded automatically by the index.
+    const inRange = await ctx.db
+      .query("commitments")
+      .withIndex("by_user_due", (q) =>
+        q.eq("userId", user._id)
+          .gte("dueDate", args.startDate)
+          .lte("dueDate", args.endDate)
+      )
+      .filter((q) => q.neq(q.field("status"), "cancelled"))
+      .collect();
 
     if (inRange.length === 0) return [];
 
@@ -388,6 +387,10 @@ export const getAllForCalendar = query({
 
 // Get today's agenda: overdue items first, then commitments due within the requested range.
 // Enriched with client names. Used by agenda_today and agenda_week widgets.
+//
+// OPTIMISED: two bounded index scans instead of scanning ALL pending records.
+// Previous: collect() all pending → filter in memory.
+// New: by_user_due range scan for in-range + a separate bounded scan for overdue.
 export const getAgendaForDateRange = query({
   args: {
     startDate: v.number(), // epoch ms — start of range (usually start of today)
@@ -398,20 +401,36 @@ export const getAgendaForDateRange = query({
     const user = await resolveUser(ctx);
     if (!user) return [];
 
-    const allPending = await ctx.db
-      .query("commitments")
-      .withIndex("by_status", (q) => q.eq("userId", user._id).eq("status", "pending"))
-      .collect();
-
     const includeOverdue = args.includeOverdue !== false;
     const now = Date.now();
 
-    const inRange = allPending.filter(
-      (c) => c.dueDate != null && c.dueDate >= args.startDate && c.dueDate <= args.endDate
-    );
-    const overdue = includeOverdue
-      ? allPending.filter((c) => c.dueDate != null && c.dueDate < args.startDate)
-      : [];
+    // In-range pending items via index — O(range) not O(all pending)
+    const inRange = await ctx.db
+      .query("commitments")
+      .withIndex("by_user_due", (q) =>
+        q.eq("userId", user._id)
+          .gte("dueDate", args.startDate)
+          .lte("dueDate", args.endDate)
+      )
+      .filter((q) => q.eq(q.field("status"), "pending"))
+      .collect();
+
+    // Overdue: pending items whose dueDate is before startDate.
+    // Use by_status index (reads ONLY pending records) then filter by date in memory.
+    // This avoids reading completed/cancelled records via by_user_due which could
+    // be large when many historical commitments have been completed.
+    let overdue: typeof inRange = [];
+    if (includeOverdue) {
+      const allPending = await ctx.db
+        .query("commitments")
+        .withIndex("by_status", (q) =>
+          q.eq("userId", user._id).eq("status", "pending")
+        )
+        .collect();
+      overdue = allPending.filter(
+        (c) => c.dueDate != null && c.dueDate < args.startDate
+      );
+    }
 
     const combined = [...overdue, ...inRange].sort((a, b) => (a.dueDate ?? 0) - (b.dueDate ?? 0));
 

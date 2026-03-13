@@ -292,7 +292,7 @@ export default function PulsePage() {
 
   // ─── Render ─────────────────────────────────────────────────────────
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] bg-background overflow-hidden">
+    <div className="flex h-full bg-background overflow-hidden">
       {/* ═══ Mobile sidebar overlay ═══ */}
       {showSidebar &&
         typeof document !== "undefined" &&

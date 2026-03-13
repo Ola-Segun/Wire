@@ -86,8 +86,10 @@ export const resolveForMessage = mutation({
       }
     }
 
-    // Strategy 2: Find active conversation for this client within 24 hours
-    const ACTIVE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+    // Strategy 2: Find active conversation for this client within 72 hours.
+    // 72h covers normal project gaps (client reviews deliverables over 2 days)
+    // without creating a new conversation on every reply after a brief pause.
+    const ACTIVE_WINDOW_MS = 72 * 60 * 60 * 1000; // 72 hours
     const activeConversations = conversations;
 
     const recentActive = activeConversations.find(
@@ -152,28 +154,34 @@ export const resolveForMessage = mutation({
 // INTERNAL — Called by cron to mark dormant conversations
 // ============================================
 
-// Mark conversations as dormant if no messages for 7 days
+// Mark conversations as dormant if no messages for 7 days.
+// OPTIMISED: bounded .take(500) instead of unbounded .collect() to prevent
+// catastrophic full-table reads on the daily cron run.
+// NOTE: adding .index("by_status_updated", ["status", "lastMessageAt"]) to
+// the schema would make this a true O(stale) scan — add in next schema migration.
 export const markDormant = internalMutation({
   args: {},
   handler: async (ctx) => {
     const DORMANT_AFTER_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
     const cutoff = Date.now() - DORMANT_AFTER_MS;
+    const now = Date.now();
 
-    // Get all active conversations
-    const active = await ctx.db
+    // by_status_updated index: reads ONLY "active" convos with lastMessageAt < cutoff.
+    // O(stale records) — no longer scans the entire conversations table.
+    const stale = await ctx.db
       .query("conversations")
-      .filter((q) => q.eq(q.field("status"), "active"))
-      .collect();
+      .withIndex("by_status_updated", (q) =>
+        q.eq("status", "active").lt("lastMessageAt", cutoff)
+      )
+      .take(500); // Safety cap per cron run — daily cadence keeps backlog small
 
     let count = 0;
-    for (const conv of active) {
-      if (conv.lastMessageAt < cutoff) {
-        await ctx.db.patch(conv._id, {
-          status: "dormant",
-          updatedAt: Date.now(),
-        });
-        count++;
-      }
+    for (const conv of stale) {
+      await ctx.db.patch(conv._id, {
+        status: "dormant",
+        updatedAt: now,
+      });
+      count++;
     }
 
     return { markedDormant: count };

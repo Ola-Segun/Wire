@@ -72,30 +72,43 @@ function calculateResponseTimeScore(messages: HealthMessage[]): number {
   return 10;
 }
 
+// Exponential decay factor applied to sentiment history.
+// Each step back in time is worth 15% less than the previous message.
+// Effect: the most recent message is 6-7× more influential than one sent
+// ~10 messages ago, allowing the health score to surface trend reversals
+// (e.g. a frustrated client who was previously positive) much faster than
+// a flat average would.
+const SENTIMENT_DECAY = 0.85;
+
 function calculateSentimentScore(messages: HealthMessage[]): number {
-  const inboundWithSentiment = messages.filter(
-    (m) => m.direction === "inbound" && m.aiMetadata?.sentiment
-  );
+  // Sort newest-first so decay index i=0 aligns with the latest message
+  const inboundWithSentiment = messages
+    .filter((m) => m.direction === "inbound" && m.aiMetadata?.sentiment)
+    .sort((a, b) => b.timestamp - a.timestamp);
 
   if (inboundWithSentiment.length === 0) return 60; // No data → neutral
 
   const sentimentMap: Record<string, number> = {
-    positive: 90,
-    satisfied: 85,
-    neutral: 60,
-    concerned: 40,
+    positive:   90,
+    satisfied:  85,
+    neutral:    60,
+    concerned:  40,
     frustrated: 20,
-    negative: 15,
-    angry: 5,
+    negative:   15,
+    angry:       5,
   };
 
-  let totalScore = 0;
-  for (const msg of inboundWithSentiment) {
-    const sentiment = msg.aiMetadata!.sentiment!.toLowerCase();
-    totalScore += sentimentMap[sentiment] ?? 50;
-  }
+  let weightedScore = 0;
+  let totalWeight   = 0;
 
-  return Math.round(totalScore / inboundWithSentiment.length);
+  inboundWithSentiment.forEach((msg, i) => {
+    const weight    = Math.pow(SENTIMENT_DECAY, i);
+    const sentiment = msg.aiMetadata!.sentiment!.toLowerCase();
+    weightedScore  += (sentimentMap[sentiment] ?? 50) * weight;
+    totalWeight    += weight;
+  });
+
+  return Math.round(weightedScore / totalWeight);
 }
 
 function calculateFrequencyScore(

@@ -325,6 +325,7 @@ export default function SettingsPage() {
     connectedPlatforms?.find((p) => p.platform === platform);
 
   return (
+    <div className="h-full overflow-y-auto scrollbar-thin pb-28">
     <div className="max-w-4xl mx-auto p-6 animate-fade-in">
       <div className="mb-6">
         <h1 className="text-xl font-display font-bold text-foreground">
@@ -982,6 +983,7 @@ export default function SettingsPage() {
           </div>,
           document.body
         )}
+    </div>
     </div>
   );
 }

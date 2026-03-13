@@ -53,8 +53,9 @@ export const ClientSkillAlertsPanel = memo(function ClientSkillAlertsPanel({
     clientId: clientId as any,
     limit: 10,
   });
-  const dismiss = useMutation(api.skills.dismissOutput);
-  const markRead = useMutation(api.skills.markOutputRead);
+  const dismiss       = useMutation(api.skills.dismissOutput);
+  const markRead      = useMutation(api.skills.markOutputRead);
+  const markActioned  = useMutation(api.skills.markActionTaken);
 
   const handleCopy = useCallback(async (id: string, text: string) => {
     try {
@@ -189,6 +190,7 @@ export const ClientSkillAlertsPanel = memo(function ClientSkillAlertsPanel({
                     deliverables={meta?.deliverables as string[] | undefined}
                     onCopy={handleCopy}
                     copied={copied}
+                    onActionTaken={() => markActioned({ id: output._id })}
                   />
                 )}
 
@@ -200,6 +202,7 @@ export const ClientSkillAlertsPanel = memo(function ClientSkillAlertsPanel({
                     clientName={meta.clientName as string}
                     onCopy={handleCopy}
                     copied={copied}
+                    onActionTaken={() => markActioned({ id: output._id })}
                   />
                 )}
               </div>
@@ -218,11 +221,13 @@ const RateCardPanel = memo(function RateCardPanel({
   deliverables,
   onCopy,
   copied,
+  onActionTaken,
 }: {
   outputId: string;
   deliverables?: string[];
   onCopy: (id: string, text: string) => void;
   copied: string | null;
+  onActionTaken: () => void;
 }) {
   const scopeContext = deliverables?.length
     ? `\n\nFor reference, our current agreement covers: ${deliverables.join(", ")}.`
@@ -261,9 +266,21 @@ Best,
       <pre className="text-[11px] text-foreground/80 whitespace-pre-wrap leading-relaxed font-sans">
         {template}
       </pre>
-      <p className="text-[10px] text-muted-foreground/60 mt-2">
-        Tip: Fill in your rate and send via the Reply Composer below.
-      </p>
+      <div className="flex items-center justify-between mt-2">
+        <p className="text-[10px] text-muted-foreground/60">
+          Tip: Fill in your rate and send via the Reply Composer below.
+        </p>
+        <button
+          onClick={() => {
+            onActionTaken();
+            toast.success("Marked as actioned — alert won't re-fire.");
+          }}
+          className="flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors shrink-0"
+        >
+          <Check className="h-3 w-3" />
+          Outreach Sent
+        </button>
+      </div>
     </div>
   );
 });
@@ -276,12 +293,14 @@ const RecoveryTemplatePanel = memo(function RecoveryTemplatePanel({
   clientName,
   onCopy,
   copied,
+  onActionTaken,
 }: {
   outputId: string;
   template: string;
   clientName: string;
   onCopy: (id: string, text: string) => void;
   copied: string | null;
+  onActionTaken: () => void;
 }) {
   return (
     <div className="ml-7 rounded-lg border border-urgent/20 bg-urgent/5 p-3">
@@ -309,9 +328,21 @@ const RecoveryTemplatePanel = memo(function RecoveryTemplatePanel({
       <pre className="text-[11px] text-foreground/80 whitespace-pre-wrap leading-relaxed font-sans">
         {template}
       </pre>
-      <p className="text-[10px] text-muted-foreground/60 mt-2">
-        Send this via the Reply Composer to begin recovery. Speed matters — respond within the hour.
-      </p>
+      <div className="flex items-center justify-between mt-2">
+        <p className="text-[10px] text-muted-foreground/60">
+          Send this via the Reply Composer to begin recovery. Speed matters — respond within the hour.
+        </p>
+        <button
+          onClick={() => {
+            onActionTaken();
+            toast.success("Recovery outreach marked as sent.");
+          }}
+          className="flex items-center gap-1 text-[10px] font-medium px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors shrink-0"
+        >
+          <Check className="h-3 w-3" />
+          Outreach Sent
+        </button>
+      </div>
     </div>
   );
 });

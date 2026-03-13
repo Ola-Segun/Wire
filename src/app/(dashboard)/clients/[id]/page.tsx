@@ -312,6 +312,7 @@ export default function ClientDetailPage() {
     health >= 70 ? "healthy" : health >= 40 ? "attention" : "at-risk";
 
   return (
+    <div className="h-full overflow-y-auto scrollbar-thin pb-28">
     <div className="max-w-6xl mx-auto p-6 animate-fade-in">
       {/* Back button */}
       <div className="flex items-center justify-between mb-5">
@@ -786,6 +787,7 @@ export default function ClientDetailPage() {
           onClose={() => setAddIdentityOpen(false)}
         />
       )}
+    </div>
     </div>
   );
 }

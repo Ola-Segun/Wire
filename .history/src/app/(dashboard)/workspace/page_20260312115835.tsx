@@ -55,20 +55,7 @@ import {
 } from "@/lib/date-utils";
 import { format, addDays, startOfWeek } from "date-fns";
 import { GlassDateStrip } from "@/components/dashboard/glass-date-strip";
-import { motion, AnimatePresence, useMotionValue, useSpring, useTransform } from "framer-motion";
-
-function NumberTicker({ value, className }: { value: number; className?: string }) {
-  const motionVal = useMotionValue(0);
-  const spring = useSpring(motionVal, { stiffness: 120, damping: 20, mass: 0.5 });
-  const display = useTransform(spring, (v) => Math.round(v).toString());
-
-  useEffect(() => {
-    motionVal.set(value);
-  }, [value, motionVal]);
-
-  return <motion.span className={className}>{display}</motion.span>;
-}
-
+import { motion, AnimatePresence } from "framer-motion";
 import { WorkspaceDynamicToolbar } from "@/components/dashboard/workspace-toolbar";
 import { WireHubWidget } from "@/components/dashboard/hub-widget";
 import { SentimentTrajectoryChart, type SentimentPoint } from "@/components/dashboard/sentiment-trajectory-chart";
@@ -135,9 +122,7 @@ function WorkspaceStatsPanel() {
           <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${bg}`}>
             <Icon className={`h-3.5 w-3.5 ${color}`} />
           </div>
-          <p className={`text-xl font-mono font-bold leading-none ${color}`}>
-            <NumberTicker value={(stats as any)?.[key] ?? 0} />
-          </p>
+          <p className={`text-xl font-mono font-bold leading-none ${color}`}>{(stats as any)?.[key] ?? 0}</p>
           <p className="text-[10px] text-muted-foreground">{label}</p>
         </div>
       ))}
@@ -626,9 +611,7 @@ const StatCardWidget = memo(function StatCardWidget({ metric }: { metric: string
           {cfg.icon}
         </div>
         <div>
-          <p className="text-2xl font-mono font-bold text-foreground">
-            <NumberTicker value={value} />
-          </p>
+          <p className="text-2xl font-mono font-bold text-foreground">{value}</p>
           <p className="text-xs text-muted-foreground">{cfg.label}</p>
         </div>
       </div>
@@ -1466,9 +1449,7 @@ const DeadlineTickerWidget = memo(function DeadlineTickerWidget() {
         {TICKERS.map(({ label, value, color, bg }) => (
           <div key={label} className="flex flex-col items-center gap-1">
             <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${bg}`}>
-              <span className={`text-xl font-mono font-bold ${color}`}>
-                <NumberTicker value={value} />
-              </span>
+              <span className={`text-xl font-mono font-bold ${color}`}>{value ?? "—"}</span>
             </div>
             <span className="text-[10px] text-muted-foreground font-mono">{label}</span>
           </div>

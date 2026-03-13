@@ -7,6 +7,7 @@ import { api } from "@/convex/_generated/api";
 import {
   LayoutDashboard,
   LayoutGrid,
+  PanelTop,
   Inbox,
   Users,
   Settings,
@@ -21,6 +22,7 @@ import { healthColor, healthBg } from "@/lib/helpers";
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/workspace", label: "Workspace", icon: LayoutGrid },
+  { href: "/bento", label: "Bento", icon: PanelTop },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/pulse", label: "Pulse", icon: Activity },
   { href: "/inbox", label: "Inbox", icon: Inbox },

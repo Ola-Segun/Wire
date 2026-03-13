@@ -150,11 +150,13 @@ export const analyzeWriting = action({
 Draft:
 "${safeText}"`;
 
+    // Short drafts (< 280 chars) are simple enough for Haiku.
+    // Longer, more complex messages use the quality model for better accuracy.
     const rawText = await callLLM({
       systemPrompt: WRITING_SYSTEM_PROMPT,
       userPrompt,
       maxTokens: 800,
-      preferFast: false, // Writing analysis needs quality model
+      preferFast: safeText.length < 280,
     });
 
     const result: Record<string, unknown> | null = safeParseJson(rawText);
@@ -296,6 +298,44 @@ Respond with ONLY the rewritten message.`;
 
     return await callLLM({
       systemPrompt: "You are a professional writing assistant. Rewrite messages as instructed. Respond with ONLY the rewritten message.",
+      userPrompt: prompt,
+      maxTokens: 500,
+      preferFast: true,
+    }).catch(() => args.text);
+  },
+});
+
+// Fix grammar and spelling errors
+export const fixGrammar = action({
+  args: {
+    text: v.string(),
+    errors: v.optional(
+      v.array(
+        v.object({
+          errorText: v.string(),
+          suggestions: v.array(v.string()),
+        })
+      )
+    ),
+  },
+  handler: async (_ctx, args) => {
+    const errorHints =
+      args.errors && args.errors.length > 0
+        ? `\n\nSpecific errors to fix:\n${args.errors
+            .map((e) => `- "${e.errorText}" → ${e.suggestions[0] ?? "correct it"}`)
+            .join("\n")}`
+        : "";
+
+    const prompt = `Fix all grammar, spelling, and punctuation errors in this message:
+
+Original: "${args.text}"${errorHints}
+
+Keep the original meaning, wording, and style exactly — only fix errors.
+Respond with ONLY the corrected message.`;
+
+    return await callLLM({
+      systemPrompt:
+        "You are a grammar editor. Fix errors exactly as instructed. Respond with ONLY the corrected message, nothing else.",
       userPrompt: prompt,
       maxTokens: 500,
       preferFast: true,

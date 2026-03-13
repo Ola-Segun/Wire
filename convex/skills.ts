@@ -104,7 +104,7 @@ export const SKILL_REGISTRY: SkillDefinition[] = [
     category: "productivity",
     trigger: "on_demand",
     requiresAiCall: true, // Uses Haiku — cheapest model
-    defaultEnabled: false,
+    defaultEnabled: true,
     defaultConfig: { replyCount: 3 },
   },
   {
@@ -214,6 +214,7 @@ export const getOutputs = query({
 });
 
 // Get unread output count for badge display
+// Bounded to 999 — avoids unbounded .collect() on users with many alerts.
 export const getUnreadCount = query({
   args: {},
   handler: async (ctx) => {
@@ -225,7 +226,7 @@ export const getUnreadCount = query({
       .withIndex("by_user_unread", (q) =>
         q.eq("userId", user._id).eq("isRead", false)
       )
-      .collect();
+      .take(999);
 
     const now = Date.now();
     return unread.filter(
@@ -321,7 +322,9 @@ export const updateConfig = mutation({
   },
 });
 
-// Dismiss a skill output
+// Dismiss a skill output — snooze-style.
+// The alert can re-fire after the dedup window expires if the underlying
+// signal persists. Use markActionTaken when outreach was actually sent.
 export const dismissOutput = mutation({
   args: { id: v.id("skill_outputs") },
   handler: async (ctx, args) => {
@@ -332,6 +335,27 @@ export const dismissOutput = mutation({
     if (!output || output.userId !== user._id) throw new Error("Not found");
 
     await ctx.db.patch(args.id, { isDismissed: true });
+  },
+});
+
+// Mark a skill output as actioned — the user explicitly did something about it
+// (e.g. sent the crisis recovery message, addressed the scope creep issue).
+// Actioned outputs suppress re-firing for the full dedup window even if the
+// underlying signal persists, preventing repeated alerts after the user responds.
+export const markActionTaken = mutation({
+  args: { id: v.id("skill_outputs") },
+  handler: async (ctx, args) => {
+    const user = await resolveUser(ctx);
+    if (!user) throw new Error("Not authenticated");
+
+    const output = await ctx.db.get(args.id);
+    if (!output || output.userId !== user._id) throw new Error("Not found");
+
+    await ctx.db.patch(args.id, {
+      isDismissed: true,
+      actionTaken: true,
+      isRead:      true,
+    });
   },
 });
 
@@ -473,14 +497,17 @@ export const getRecentByUserInternal = internalQuery({
 });
 
 // Cleanup expired skill outputs (called by cron)
+// Batch size raised from 100 → 500 so backlog clears faster when many alerts expire.
 export const cleanupExpired = internalMutation({
   args: {},
   handler: async (ctx) => {
     const now = Date.now();
+    // by_expires index: only fetches documents whose expiresAt < now.
+    // No full-table scan — O(expired) not O(all outputs).
     const expired = await ctx.db
       .query("skill_outputs")
       .withIndex("by_expires", (q) => q.lt("expiresAt", now))
-      .take(100);
+      .take(500);
 
     let cleaned = 0;
     for (const output of expired) {

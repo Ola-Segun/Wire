@@ -49,6 +49,7 @@ export default function DashboardPage() {
   }
 
   return (
+    <div className="h-full overflow-y-auto scrollbar-thin pb-28">
     <div className="max-w-7xl mx-auto p-6 animate-fade-in">
       {/* Welcome Header */}
       <div className="mb-8">
@@ -411,6 +412,7 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 }

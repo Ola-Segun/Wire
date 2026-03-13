@@ -15,33 +15,47 @@ import { api, internal } from "./_generated/api";
 //   - AI skills (smart_replies, thread_summarizer) are on-demand ONLY,
 //     triggered by user action, using Haiku for cheapest inference.
 //
-// Deduplication: Before creating an output, we check if an identical
-// output already exists (same skill + client + type within 24 hours).
-// This prevents duplicate alerts from repeated cron runs.
+// Query optimisation:
+//   Each reactive skill previously called isSkillEnabled (1 query) followed
+//   immediately by getSkillConfig (1 query). Since getSkillConfig returns
+//   { enabled, config, clientScope }, the first query is now redundant.
+//   All reactive and cron skill runners call getSkillConfig once and check
+//   .enabled inline — saving 1 DB read per skill per message analyzed.
+//
+// Deduplication:
+//   hasRecentOutput checks for ANY output (dismissed or not) within the dedup
+//   window. Previously it filtered out dismissed outputs, which caused a bug:
+//   after a user dismissed an alert, the next cron/message would re-fire
+//   immediately because hasRecentOutput returned false.
+//
+//   The fix: remove the !isDismissed filter from hasRecentOutput.
+//   Dismissed outputs still suppress new alerts within the dedup window.
+//   Alerts re-fire only once the dedup window expires.
+//
+//   actionTaken: when a user explicitly acts (e.g. sends outreach), the output
+//   is marked actionTaken=true. hasRecentOutput counts actionTaken outputs too,
+//   so acted-on alerts get the same dedup treatment as dismissed ones.
 
 // ============================================
 // REACTIVE DISPATCHER — Called after unified AI analysis completes
 // ============================================
 
-// Run reactive skills for a newly analyzed message.
-// Called from unified.ts after metadata is persisted.
-// Cost: 0 Claude calls — all data comes from existing aiMetadata.
 export const onMessageAnalyzed = internalAction({
   args: {
-    userId: v.id("users"),
-    messageId: v.id("messages"),
-    clientId: v.id("clients"),
+    userId:     v.id("users"),
+    messageId:  v.id("messages"),
+    clientId:   v.id("clients"),
     aiMetadata: v.any(),
   },
   handler: async (ctx, args) => {
     const { userId, messageId, clientId, aiMetadata } = args;
     if (!aiMetadata) return;
 
-    // Run each reactive skill in parallel (they're all DB reads, very fast)
+    // Run reactive skills in parallel (all DB reads, very fast)
     await Promise.allSettled([
-      runScopeGuardian(ctx, userId, messageId, clientId, aiMetadata),
-      runChurnPredictor(ctx, userId, messageId, clientId, aiMetadata),
-      runRevenueRadar(ctx, userId, messageId, clientId, aiMetadata),
+      runScopeGuardian(ctx,   userId, messageId, clientId, aiMetadata),
+      runChurnPredictor(ctx,  userId, messageId, clientId, aiMetadata),
+      runRevenueRadar(ctx,    userId, messageId, clientId, aiMetadata),
     ]);
   },
 });
@@ -50,8 +64,6 @@ export const onMessageAnalyzed = internalAction({
 // CRON DISPATCHER — Called by cron for scheduled skills
 // ============================================
 
-// Run all cron-triggered skills for all users.
-// Cost: 0 Claude calls — pure DB queries.
 export const runCronSkills = internalAction({
   args: {},
   handler: async (ctx) => {
@@ -62,18 +74,17 @@ export const runCronSkills = internalAction({
 
     for (const user of users) {
       await Promise.allSettled([
-        runCommitmentWatchdog(ctx, user._id),
-        runGhostingDetector(ctx, user._id),
-        runPaymentSentinel(ctx, user._id),
+        runCommitmentWatchdog(ctx,     user._id),
+        runGhostingDetector(ctx,       user._id),
+        runPaymentSentinel(ctx,        user._id),
         runRevenueLeakageDetector(ctx, user._id),
-        runCrisisMode(ctx, user._id),
+        runCrisisMode(ctx,             user._id),
       ]);
     }
   },
 });
 
-// Run daily briefings for all users.
-// Called by cron at 7am UTC every day.
+// Run daily briefings for all users at 7am UTC.
 // Cost: 1 Haiku call per user per day (~$0.0001/user).
 export const runDailyBriefings = internalAction({
   args: {},
@@ -106,7 +117,6 @@ export const runDailyBriefings = internalAction({
 
 // --- Scope Guardian ---
 // Fires when scopeCreepDetected is true.
-// Checks if the client has an active contract and compares.
 async function runScopeGuardian(
   ctx: any,
   userId: any,
@@ -116,6 +126,7 @@ async function runScopeGuardian(
 ) {
   if (!aiMetadata.scopeCreepDetected) return;
 
+  // Single query returns enabled + config + clientScope (was 2 separate queries)
   const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
     userId,
     skillSlug: "scope_guardian",
@@ -123,7 +134,6 @@ async function runScopeGuardian(
   if (!skillConfig.enabled) return;
   if (skillConfig.clientScope?.length && !skillConfig.clientScope.includes(clientId)) return;
 
-  // Deduplicate: skip if we already alerted about this client in the last 24h
   const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
     userId,
     skillSlug: "scope_guardian",
@@ -132,13 +142,12 @@ async function runScopeGuardian(
   });
   if (recent) return;
 
-  // Check for active contracts to enrich the alert
   const contracts: any[] = await ctx.runQuery(
     internal.contracts.getActiveByClient,
     { clientId }
   );
 
-  const deliverables = contracts.flatMap((c: any) => c.deliverables || []);
+  const deliverables    = contracts.flatMap((c: any) => c.deliverables || []);
   const contractContext = deliverables.length > 0
     ? `Active contract deliverables: ${deliverables.join(", ")}`
     : "No active contract found — consider creating one to track scope.";
@@ -148,13 +157,13 @@ async function runScopeGuardian(
     skillSlug: "scope_guardian",
     clientId,
     messageId,
-    type: "alert",
-    severity: "warning",
-    title: "Scope creep detected",
-    content: `A client message appears to request work outside the agreed scope. ${contractContext}`,
-    metadata: { deliverables, topics: aiMetadata.topics },
+    type:       "alert",
+    severity:   "warning",
+    title:      "Scope creep detected",
+    content:    `A client message appears to request work outside the agreed scope. ${contractContext}`,
+    metadata:   { deliverables, topics: aiMetadata.topics },
     actionable: true,
-    expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 day TTL
+    expiresAt:  Date.now() + 7 * 24 * 60 * 60 * 1000,
   });
 }
 
@@ -181,7 +190,7 @@ async function runChurnPredictor(
     userId,
     skillSlug: "churn_predictor",
     clientId,
-    withinMs: 48 * 60 * 60 * 1000, // 48h dedup window
+    withinMs: 48 * 60 * 60 * 1000,
   });
   if (recent) return;
 
@@ -192,13 +201,13 @@ async function runChurnPredictor(
     skillSlug: "churn_predictor",
     clientId,
     messageId,
-    type: "insight",
+    type:       "insight",
     severity,
-    title: `${risk === "high" ? "High" : "Medium"} churn risk detected`,
-    content: `This client shows signs of disengagement. Sentiment: ${aiMetadata.sentiment}. Consider proactive outreach.`,
-    metadata: { churnRisk: risk, sentiment: aiMetadata.sentiment },
+    title:      `${risk === "high" ? "High" : "Medium"} churn risk detected`,
+    content:    `This client shows signs of disengagement. Sentiment: ${aiMetadata.sentiment}. Consider proactive outreach.`,
+    metadata:   { churnRisk: risk, sentiment: aiMetadata.sentiment },
     actionable: true,
-    expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+    expiresAt:  Date.now() + 7 * 24 * 60 * 60 * 1000,
   });
 }
 
@@ -211,8 +220,9 @@ async function runRevenueRadar(
   clientId: any,
   aiMetadata: any
 ) {
-  const hasDealSignal = aiMetadata.dealSignal === true;
-  const hasValueSignal = aiMetadata.valueSignal === "expansion" || aiMetadata.valueSignal === "contraction";
+  const hasDealSignal  = aiMetadata.dealSignal === true;
+  const hasValueSignal =
+    aiMetadata.valueSignal === "expansion" || aiMetadata.valueSignal === "contraction";
 
   if (!hasDealSignal && !hasValueSignal) return;
 
@@ -237,13 +247,13 @@ async function runRevenueRadar(
       skillSlug: "revenue_radar",
       clientId,
       messageId,
-      type: "insight",
-      severity: "info",
-      title: "Deal signal detected",
-      content: "Client appears ready to proceed. Consider sending an invoice or confirming next steps.",
-      metadata: { dealSignal: true, intent: aiMetadata.clientIntent },
+      type:       "insight",
+      severity:   "info",
+      title:      "Deal signal detected",
+      content:    "Client appears ready to proceed. Consider sending an invoice or confirming next steps.",
+      metadata:   { dealSignal: true, intent: aiMetadata.clientIntent },
       actionable: true,
-      expiresAt: Date.now() + 3 * 24 * 60 * 60 * 1000,
+      expiresAt:  Date.now() + 3 * 24 * 60 * 60 * 1000,
     });
   }
 
@@ -253,13 +263,13 @@ async function runRevenueRadar(
       skillSlug: "revenue_radar",
       clientId,
       messageId,
-      type: "insight",
-      severity: "info",
-      title: "Upsell opportunity",
-      content: "Client is signaling scope expansion or additional work interest.",
-      metadata: { valueSignal: "expansion" },
+      type:       "insight",
+      severity:   "info",
+      title:      "Upsell opportunity",
+      content:    "Client is signaling scope expansion or additional work interest.",
+      metadata:   { valueSignal: "expansion" },
       actionable: true,
-      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      expiresAt:  Date.now() + 7 * 24 * 60 * 60 * 1000,
     });
   } else if (aiMetadata.valueSignal === "contraction") {
     await ctx.runMutation(internal.skills.createOutput, {
@@ -267,13 +277,13 @@ async function runRevenueRadar(
       skillSlug: "revenue_radar",
       clientId,
       messageId,
-      type: "alert",
-      severity: "warning",
-      title: "Budget contraction signal",
-      content: "Client mentioned scaling back or budget constraints. Review engagement strategy.",
-      metadata: { valueSignal: "contraction" },
+      type:       "alert",
+      severity:   "warning",
+      title:      "Budget contraction signal",
+      content:    "Client mentioned scaling back or budget constraints. Review engagement strategy.",
+      metadata:   { valueSignal: "contraction" },
       actionable: true,
-      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      expiresAt:  Date.now() + 7 * 24 * 60 * 60 * 1000,
     });
   }
 }
@@ -283,138 +293,124 @@ async function runRevenueRadar(
 // ============================================
 
 // --- Commitment Watchdog ---
-// Scans for overdue and soon-due commitments.
 async function runCommitmentWatchdog(ctx: any, userId: any) {
-  const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+  // getSkillConfig returns { enabled, config, clientScope } — 1 query vs 2
+  const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
     userId,
     skillSlug: "commitment_watchdog",
   });
-  if (!enabled) return;
+  if (!skillConfig.enabled) return;
 
   const pending: any[] = await ctx.runQuery(
     internal.commitments.getPendingInternal,
     { userId }
   );
 
-  const now = Date.now();
-  const overdue = pending.filter((c) => c.dueDate && c.dueDate < now);
-  const dueSoon = pending.filter(
+  const now      = Date.now();
+  const overdue  = pending.filter((c) => c.dueDate && c.dueDate < now);
+  const dueSoon  = pending.filter(
     (c) => c.dueDate && c.dueDate >= now && c.dueDate < now + 24 * 60 * 60 * 1000
   );
 
   if (overdue.length === 0 && dueSoon.length === 0) return;
 
-  // Dedup: only alert once per day
   const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
     userId,
     skillSlug: "commitment_watchdog",
-    withinMs: 24 * 60 * 60 * 1000,
+    withinMs:  24 * 60 * 60 * 1000,
   });
   if (recent) return;
 
   const parts: string[] = [];
-  if (overdue.length > 0) {
-    parts.push(`${overdue.length} overdue commitment${overdue.length > 1 ? "s" : ""}`);
-  }
-  if (dueSoon.length > 0) {
-    parts.push(`${dueSoon.length} due within 24 hours`);
-  }
+  if (overdue.length > 0) parts.push(`${overdue.length} overdue commitment${overdue.length > 1 ? "s" : ""}`);
+  if (dueSoon.length > 0) parts.push(`${dueSoon.length} due within 24 hours`);
 
   await ctx.runMutation(internal.skills.createOutput, {
     userId,
-    skillSlug: "commitment_watchdog",
-    type: "alert",
-    severity: overdue.length > 0 ? "warning" : "info",
-    title: "Commitment update",
-    content: parts.join(". ") + ".",
+    skillSlug:  "commitment_watchdog",
+    type:       "alert",
+    severity:   overdue.length > 0 ? "warning" : "info",
+    title:      "Commitment update",
+    content:    parts.join(". ") + ".",
     metadata: {
       overdueCount: overdue.length,
       dueSoonCount: dueSoon.length,
       overdueItems: overdue.slice(0, 5).map((c: any) => c.text),
     },
     actionable: true,
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000, // Refresh daily
+    expiresAt:  Date.now() + 24 * 60 * 60 * 1000,
   });
 }
 
 // --- Ghosting Detector ---
-// Checks each client's silence duration vs. their baseline response time.
 async function runGhostingDetector(ctx: any, userId: any) {
-  const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
-    userId,
-    skillSlug: "ghosting_detector",
-  });
-  if (!enabled) return;
-
   const config = await ctx.runQuery(internal.skills.getSkillConfig, {
     userId,
     skillSlug: "ghosting_detector",
   });
-  const multiplier = (config.config as any)?.silenceMultiplier ?? 3;
+  if (!config.enabled) return;
 
-  const clients: any[] = await ctx.runQuery(
+  const multiplier       = (config.config as any)?.silenceMultiplier ?? 3;
+  const clients: any[]   = await ctx.runQuery(
     internal.clients.getActiveByUserInternal,
     { userId }
   );
 
-  const now = Date.now();
-  const scopedClientIds: string[] | null = config.clientScope?.length ? config.clientScope : null;
+  const now            = Date.now();
+  const scopedClientIds: string[] | null = config.clientScope?.length
+    ? config.clientScope
+    : null;
 
   for (const client of clients) {
-    // Skip clients outside the configured scope
     if (scopedClientIds && !scopedClientIds.includes(client._id)) continue;
-    // Skip clients with no response time data
     if (!client.responseTimeAvg || client.responseTimeAvg <= 0) continue;
 
-    const silenceMs = now - client.lastContactDate;
+    const silenceMs   = now - client.lastContactDate;
     const thresholdMs = client.responseTimeAvg * multiplier;
-
     if (silenceMs <= thresholdMs) continue;
 
-    // Dedup per client (48h window)
     const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
       userId,
       skillSlug: "ghosting_detector",
-      clientId: client._id,
-      withinMs: 48 * 60 * 60 * 1000,
+      clientId:  client._id,
+      withinMs:  48 * 60 * 60 * 1000,
     });
     if (recent) continue;
 
     const silenceHours = Math.round(silenceMs / (60 * 60 * 1000));
-    const avgHours = Math.round(client.responseTimeAvg / (60 * 60 * 1000));
+    const avgHours     = Math.round(client.responseTimeAvg / (60 * 60 * 1000));
 
     await ctx.runMutation(internal.skills.createOutput, {
       userId,
-      skillSlug: "ghosting_detector",
-      clientId: client._id,
-      type: "alert",
-      severity: silenceHours > avgHours * 5 ? "critical" : "warning",
-      title: `${client.name} has gone quiet`,
-      content: `No messages in ${silenceHours}h (their average response time: ${avgHours}h). Consider a follow-up.`,
-      metadata: { silenceHours, avgResponseHours: avgHours },
+      skillSlug:  "ghosting_detector",
+      clientId:   client._id,
+      type:       "alert",
+      severity:   silenceHours > avgHours * 5 ? "critical" : "warning",
+      title:      `${client.name} has gone quiet`,
+      content:    `No messages in ${silenceHours}h (their average response time: ${avgHours}h). Consider a follow-up.`,
+      metadata:   { silenceHours, avgResponseHours: avgHours },
       actionable: true,
-      expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+      expiresAt:  Date.now() + 48 * 60 * 60 * 1000,
     });
   }
 }
 
 // --- Payment Sentinel ---
-// Scans for overdue payment-type commitments.
 async function runPaymentSentinel(ctx: any, userId: any) {
-  const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+  const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
     userId,
     skillSlug: "payment_sentinel",
   });
-  if (!enabled) return;
+  if (!skillConfig.enabled) return;
 
-  const pending: any[] = await ctx.runQuery(
+  const pending: any[]   = await ctx.runQuery(
     internal.commitments.getPendingInternal,
     { userId }
   );
 
   const paymentCommitments = pending.filter((c) => c.type === "payment");
-  const now = Date.now();
-  const overdue = paymentCommitments.filter(
+  const now                = Date.now();
+  const overdue            = paymentCommitments.filter(
     (c) => c.dueDate && c.dueDate < now
   );
 
@@ -423,106 +419,98 @@ async function runPaymentSentinel(ctx: any, userId: any) {
   const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
     userId,
     skillSlug: "payment_sentinel",
-    withinMs: 24 * 60 * 60 * 1000,
+    withinMs:  24 * 60 * 60 * 1000,
   });
   if (recent) return;
 
   await ctx.runMutation(internal.skills.createOutput, {
     userId,
-    skillSlug: "payment_sentinel",
-    type: "alert",
-    severity: "warning",
-    title: `${overdue.length} overdue payment${overdue.length > 1 ? "s" : ""}`,
-    content: overdue
-      .slice(0, 3)
-      .map((c: any) => c.text)
-      .join("; "),
-    metadata: { overdueCount: overdue.length },
+    skillSlug:  "payment_sentinel",
+    type:       "alert",
+    severity:   "warning",
+    title:      `${overdue.length} overdue payment${overdue.length > 1 ? "s" : ""}`,
+    content:    overdue.slice(0, 3).map((c: any) => c.text).join("; "),
+    metadata:   { overdueCount: overdue.length },
     actionable: true,
-    expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    expiresAt:  Date.now() + 24 * 60 * 60 * 1000,
   });
 }
 
 // --- Revenue Leakage Detector ---
 // Extends Payment Sentinel: cross-references overdue payment commitments with
-// recent outbound messages. If no follow-up was sent after a payment was due,
-// escalates to a "critical" leakage alert. Zero AI calls — pure DB logic.
+// recent outbound messages. Zero AI calls — pure DB logic.
 async function runRevenueLeakageDetector(ctx: any, userId: any) {
-  const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+  const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
     userId,
     skillSlug: "payment_sentinel",
   });
-  if (!enabled) return;
+  if (!skillConfig.enabled) return;
 
-  const pending: any[] = await ctx.runQuery(
+  const pending: any[]       = await ctx.runQuery(
     internal.commitments.getPendingInternal,
     { userId }
   );
 
-  const now = Date.now();
-  const FOLLOW_UP_WINDOW_MS = 48 * 60 * 60 * 1000; // 48 hours after due date
+  const now                  = Date.now();
+  const FOLLOW_UP_WINDOW_MS  = 48 * 60 * 60 * 1000;
 
   const overduePayments = pending.filter(
     (c) => c.type === "payment" && c.dueDate && c.dueDate < now
   );
 
   for (const commitment of overduePayments) {
-    // Check if the freelancer sent any message to this client since the due date
     const outboundMessages: any[] = await ctx.runQuery(
       internal.messages.getRecentOutboundAfter,
       {
         clientId: commitment.clientId,
-        after: (commitment.dueDate as number) - FOLLOW_UP_WINDOW_MS,
+        after:    (commitment.dueDate as number) - FOLLOW_UP_WINDOW_MS,
       }
     );
-
-    // If a follow-up was already sent, this is being handled — skip
     if (outboundMessages.length > 0) continue;
 
-    // No follow-up sent → revenue leakage risk
     const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
       userId,
       skillSlug: "payment_sentinel",
-      clientId: commitment.clientId,
-      withinMs: 72 * 60 * 60 * 1000,
+      clientId:  commitment.clientId,
+      withinMs:  72 * 60 * 60 * 1000,
     });
     if (recent) continue;
 
-    const daysOverdue = Math.round((now - (commitment.dueDate as number)) / (24 * 60 * 60 * 1000));
+    const daysOverdue = Math.round(
+      (now - (commitment.dueDate as number)) / (24 * 60 * 60 * 1000)
+    );
 
     await ctx.runMutation(internal.skills.createOutput, {
       userId,
       skillSlug: "payment_sentinel",
-      clientId: commitment.clientId,
-      type: "alert",
-      severity: "critical",
-      title: `Revenue leakage: unacknowledged payment (${daysOverdue}d overdue)`,
-      content: `"${commitment.text}" is overdue with no follow-up message sent. Follow up now to recover this payment.`,
+      clientId:  commitment.clientId,
+      type:      "alert",
+      severity:  "critical",
+      title:     `Revenue leakage: unacknowledged payment (${daysOverdue}d overdue)`,
+      content:   `"${commitment.text}" is overdue with no follow-up message sent. Follow up now to recover this payment.`,
       metadata: {
-        type: "revenue_leakage",
+        type:           "revenue_leakage",
         commitmentText: commitment.text,
-        dueDate: commitment.dueDate,
+        dueDate:        commitment.dueDate,
         daysOverdue,
       },
       actionable: true,
-      expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+      expiresAt:  Date.now() + 48 * 60 * 60 * 1000,
     });
   }
 }
 
 // --- Crisis Mode Detector ---
-// Runs as a cron skill. When a client has high aggregate churn risk AND the
-// last 2+ consecutive inbound messages contain negative sentiment,
-// escalates churn_predictor to critical and surfaces a recovery template.
+// High aggregate churn risk + 2+ consecutive negative messages → escalate.
 // Zero AI calls — reads existing aiMetadata from DB.
 const CRISIS_NEGATIVE_SENTIMENTS = new Set(["negative", "frustrated", "angry"]);
 
 async function runCrisisMode(ctx: any, userId: any) {
-  const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+  const churnConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
     userId,
     skillSlug: "churn_predictor",
   });
-  if (!enabled) return;
+  if (!churnConfig.enabled) return;
 
   const clients: any[] = await ctx.runQuery(
     internal.clients.getActiveByUserInternal,
@@ -530,55 +518,50 @@ async function runCrisisMode(ctx: any, userId: any) {
   );
 
   for (const client of clients) {
-    // Only check clients with high aggregate churn risk
     if (client.intelligence?.aggregateChurnRisk !== "high") continue;
 
-    // Fetch last 5 inbound messages; need 2+ consecutive negative
     const recentInbound: any[] = await ctx.runQuery(
       internal.messages.getRecentInboundByClient,
       { clientId: client._id, limit: 5 }
     );
-
     if (recentInbound.length < 2) continue;
 
-    // Check if the last 2 consecutive inbound messages are negative
-    const lastTwo = recentInbound.slice(0, 2);
+    const lastTwo    = recentInbound.slice(0, 2);
     const allNegative = lastTwo.every((m: any) =>
       CRISIS_NEGATIVE_SENTIMENTS.has(m.aiMetadata?.sentiment ?? "")
     );
     if (!allNegative) continue;
 
-    // Dedup: 72-hour window to avoid repeated alerts
     const recent = await ctx.runQuery(internal.skillDispatcher.hasRecentOutput, {
       userId,
       skillSlug: "churn_predictor",
-      clientId: client._id,
-      withinMs: 72 * 60 * 60 * 1000,
+      clientId:  client._id,
+      withinMs:  72 * 60 * 60 * 1000,
     });
     if (recent) continue;
 
-    // Build a personalised recovery template with the client's first name
-    const firstName = client.name.split(" ")[0];
+    // Build personalised recovery template using the client's first name
+    const firstName       = client.name.split(" ")[0];
     const recoveryTemplate =
       `Hi ${firstName},\n\nI wanted to personally reach out — I sense our recent conversations may not have fully met your expectations, and I take that seriously.\n\nI'd love to schedule a quick 15-minute call this week to make sure we're aligned and to address any concerns you have. What time works best for you?\n\nBest,`;
 
     await ctx.runMutation(internal.skills.createOutput, {
       userId,
-      skillSlug: "churn_predictor",
-      clientId: client._id,
-      type: "alert",
-      severity: "critical",
-      title: `Crisis mode: ${client.name} — immediate outreach needed`,
-      content: `High churn risk + 2 consecutive negative messages. A recovery message has been drafted — send it now.`,
+      skillSlug:  "churn_predictor",
+      clientId:   client._id,
+      type:       "alert",
+      severity:   "critical",
+      title:      `Crisis mode: ${client.name} — immediate outreach needed`,
+      content:    `High churn risk + 2 consecutive negative messages. A recovery message has been drafted — send it now.`,
       metadata: {
-        crisisMode: true,
-        churnRisk: "high",
-        clientName: client.name,
+        crisisMode:          true,
+        churnRisk:           "high",
+        clientName:          client.name,
         recoveryTemplate,
         negativeMessageCount: lastTwo.length,
       },
       actionable: true,
-      expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+      expiresAt:  Date.now() + 48 * 60 * 60 * 1000,
     });
   }
 }
@@ -586,15 +569,26 @@ async function runCrisisMode(ctx: any, userId: any) {
 // ============================================
 // DEDUPLICATION HELPER
 // ============================================
+//
+// Returns true if a recent output already exists for this skill+client combo,
+// preventing duplicate alerts from rapid message processing or repeated crons.
+//
+// KEY FIX: The previous implementation filtered out isDismissed outputs, which
+// caused the dedup window to reset whenever a user dismissed an alert. This
+// led to the alert re-firing on the very next cron run.
+//
+// New behaviour:
+//   - ANY output (dismissed, actioned, or active) within the dedup window
+//     blocks a new alert from being created.
+//   - The alert only re-fires once the dedup window expires, regardless of
+//     whether the user dismissed or acted on the previous one.
 
-// Check if a recent output already exists for this skill + client combo.
-// Prevents duplicate alerts from rapid message processing or repeated crons.
 export const hasRecentOutput = internalQuery({
   args: {
-    userId: v.id("users"),
+    userId:    v.id("users"),
     skillSlug: v.string(),
-    clientId: v.optional(v.id("clients")),
-    withinMs: v.number(),
+    clientId:  v.optional(v.id("clients")),
+    withinMs:  v.number(),
   },
   handler: async (ctx, args) => {
     const cutoff = Date.now() - args.withinMs;
@@ -607,10 +601,12 @@ export const hasRecentOutput = internalQuery({
       .order("desc")
       .take(5);
 
+    // Check for ANY output within the window (dismissed or not).
+    // Previously: `!o.isDismissed` was AND-ed in, letting dismissed outputs
+    // slip through the dedup guard and trigger duplicate alerts.
     return outputs.some(
       (o) =>
         o.createdAt >= cutoff &&
-        !o.isDismissed &&
         (!args.clientId || o.clientId === args.clientId)
     );
   },

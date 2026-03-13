@@ -57,7 +57,7 @@ const SEVERITY_STYLES: Record<string, { icon: React.ReactNode; bg: string; text:
 export default function SkillsPage() {
   const skills = useQuery(api.skills.getAll);
   const clients = useQuery(api.clients.getByUser, {});
-  const outputs = useQuery(api.skills.getOutputs, { limit: 30 });
+  const outputs = useQuery(api.skills.getOutputs, { limit: 50 });
   const unreadCount = useQuery(api.skills.getUnreadCount);
   const toggleSkill = useMutation(api.skills.toggle);
   const dismissOutput = useMutation(api.skills.dismissOutput);
@@ -82,6 +82,7 @@ export default function SkillsPage() {
   };
 
   return (
+    <div className="h-full overflow-y-auto scrollbar-thin pb-28">
     <div className="max-w-4xl mx-auto p-6 animate-fade-in">
       <div className="mb-6">
         <h1 className="text-xl font-display font-bold text-foreground">
@@ -185,6 +186,7 @@ export default function SkillsPage() {
           unreadCount={unreadCount ?? 0}
         />
       )}
+    </div>
     </div>
   );
 }

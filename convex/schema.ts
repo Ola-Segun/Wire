@@ -186,7 +186,9 @@ export default defineSchema({
     .index("by_client_status", ["clientId", "status"])
     .index("by_user", ["userId"])
     .index("by_user_status", ["userId", "status"])
-    .index("by_user_recent", ["userId", "lastMessageAt"]),
+    .index("by_user_recent", ["userId", "lastMessageAt"])
+    // Enables O(stale) dormant-detection without a full table scan
+    .index("by_status_updated", ["status", "lastMessageAt"]),
 
   // ============================================
   // MESSAGES
@@ -265,6 +267,8 @@ export default defineSchema({
     .index("by_conversation", ["conversationId"])
     .index("by_user_unread", ["userId", "isRead"])
     .index("by_timestamp", ["timestamp"])
+    // Composite index for date-range stats queries (analytics, health) without full-table scans
+    .index("by_user_timestamp", ["userId", "timestamp"])
     .index("by_platform_message", ["platformMessageId"])
     .searchIndex("search_text", {
       searchField: "text",
@@ -525,6 +529,10 @@ export default defineSchema({
 
     isRead: v.boolean(),
     isDismissed: v.boolean(),
+    // Set to true when the user explicitly acts on this alert (e.g. sends crisis outreach).
+    // hasRecentOutput dedup checks this so a dismissed-but-acted alert still blocks re-firing,
+    // while a mere snooze-dismiss allows a new alert after the dedup window expires.
+    actionTaken: v.optional(v.boolean()),
     createdAt: v.number(),
     expiresAt: v.optional(v.number()),
   })

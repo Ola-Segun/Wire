@@ -6,11 +6,17 @@ import { api, internal } from "../_generated/api";
 import { callLLM } from "./llm";
 
 // On-demand skills always prefer the fast/cheap model (Haiku on Anthropic,
-// NVIDIA fallback uses the configured NVIDIA_MODEL).
+// NVIDIA fallback uses the configured NVIDIA_FAST_MODEL).
 
 // Token guards
 const MAX_MESSAGE_CHARS = 2_000;
-const MAX_THREAD_CHARS = 8_000;
+const MAX_THREAD_CHARS  = 8_000;
+
+// Daily call budgets — protect against runaway costs when a user hammers
+// the "AI Draft" or "Summarize" buttons repeatedly.
+const SMART_REPLIES_DAILY_LIMIT   = 20; // generous for active users
+const THREAD_SUMMARY_DAILY_LIMIT  = 10;
+const DAILY_WINDOW_MS             = 24 * 60 * 60 * 1000;
 
 // Safe JSON parse — strips markdown fences, returns null on failure.
 function safeParseJson(raw: string): Record<string, unknown> | null {
@@ -67,6 +73,7 @@ function buildIntelligenceContext(intel: Record<string, any>): string {
 // ============================================
 // Cost: 1 Haiku call per invocation (~$0.001).
 // Only fires when user clicks "Suggest Replies" on a message.
+// Daily budget: SMART_REPLIES_DAILY_LIMIT calls per user.
 
 const SMART_REPLIES_SYSTEM = `You are a reply assistant for freelancers communicating with clients.
 Given a client message and context, generate short, professional reply suggestions.
@@ -86,6 +93,9 @@ export const generateSmartReplies = action({
   },
   handler: async (ctx, args): Promise<{
     replies: Array<{ label: string; text: string }>;
+    rateLimited?: boolean;
+    remainingToday?: number;
+    skillDisabled?: boolean;
   }> => {
     const message: Record<string, any> | null = await ctx.runQuery(
       api.messages.get,
@@ -93,20 +103,36 @@ export const generateSmartReplies = action({
     );
     if (!message) throw new Error("Message not found");
 
-    // Check skill is enabled for this user
-    const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
-      userId: message.userId,
+    // Single getSkillConfig call returns { enabled, config, clientScope }
+    // Replaces the previous isSkillEnabled + getSkillConfig double-query.
+    const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
+      userId:    message.userId,
       skillSlug: "smart_replies",
     });
-    if (!enabled) {
-      return { replies: [] };
+    if (!skillConfig.enabled) {
+      return { replies: [], skillDisabled: true };
     }
 
-    // Get reply count from config
-    const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
-      userId: message.userId,
-      skillSlug: "smart_replies",
+    // Per-user daily rate limit — prevents budget exhaustion from repeated clicks
+    const rateLimitKey = `smart_replies:${message.userId}`;
+    const rateCheck = await ctx.runQuery(api.rateLimit.check, {
+      key:         rateLimitKey,
+      windowMs:    DAILY_WINDOW_MS,
+      maxRequests: SMART_REPLIES_DAILY_LIMIT,
     });
+    if (!rateCheck.allowed) {
+      console.warn(
+        `[SmartReplies] Daily limit reached for user ${message.userId} — ${rateCheck.count}/${SMART_REPLIES_DAILY_LIMIT}`
+      );
+      return {
+        replies:        [],
+        rateLimited:    true,
+        remainingToday: 0,
+      };
+    }
+    // Record the call before the LLM call so concurrent calls don't slip through
+    await ctx.runMutation(api.rateLimit.record, { key: rateLimitKey });
+
     const replyCount = (skillConfig.config as any)?.replyCount ?? 3;
 
     // Fetch client context for personalization
@@ -125,12 +151,9 @@ export const generateSmartReplies = action({
       ? `\nMessage signals — Sentiment: ${message.aiMetadata.sentiment ?? "unknown"}, Intent: ${message.aiMetadata.clientIntent ?? "unknown"}, Urgency: ${message.aiMetadata.urgency ?? "normal"}${message.aiMetadata.dealSignal && message.aiMetadata.dealSignal !== "none" ? `, Deal signal: ${message.aiMetadata.dealSignal}` : ""}${message.aiMetadata.churnRisk && message.aiMetadata.churnRisk !== "low" ? `, Churn risk: ${message.aiMetadata.churnRisk}` : ""}${message.aiMetadata.hiddenRequests?.length ? `, Hidden concern: "${message.aiMetadata.hiddenRequests[0]}"` : ""}`
       : "";
 
-    // Client-level intelligence signals (zero extra DB calls — already fetched)
-    // These shape reply strategy at a relationship level, not just per message.
+    // Client-level intelligence (zero extra DB calls — already fetched)
     const intel = client?.intelligence as Record<string, any> | undefined | null;
-    const intelligenceContext = intel
-      ? buildIntelligenceContext(intel)
-      : "";
+    const intelligenceContext = intel ? buildIntelligenceContext(intel) : "";
 
     const userPrompt = `Generate ${replyCount} reply suggestions for this client message.
 
@@ -144,23 +167,22 @@ Client's message:
       const rawText = await callLLM({
         systemPrompt: SMART_REPLIES_SYSTEM,
         userPrompt,
-        maxTokens: 400,
-        preferFast: true,
+        maxTokens:    400,
+        preferFast:   true,
       });
 
       const result = safeParseJson(rawText);
       if (result && Array.isArray(result.replies)) {
         return {
           replies: (result.replies as Array<Record<string, unknown>>)
-            .filter(
-              (r) => typeof r.label === "string" && typeof r.text === "string"
-            )
+            .filter((r) => typeof r.label === "string" && typeof r.text === "string")
             .slice(0, replyCount)
             .map((r) => ({ label: r.label as string, text: r.text as string })),
+          remainingToday: rateCheck.remaining - 1,
         };
       }
 
-      return { replies: [] };
+      return { replies: [], remainingToday: rateCheck.remaining - 1 };
     } catch (err) {
       console.error("Smart replies failed:", err);
       return { replies: [] };
@@ -173,6 +195,7 @@ Client's message:
 // ============================================
 // Cost: 1 Haiku call per invocation (~$0.002 for longer threads).
 // Only fires when user clicks "Summarize Thread" on a conversation.
+// Daily budget: THREAD_SUMMARY_DAILY_LIMIT calls per user.
 
 const THREAD_SUMMARY_SYSTEM = `You are a conversation analyst for freelancers.
 Given a conversation thread between a freelancer and client, produce a structured summary.
@@ -190,18 +213,18 @@ Respond ONLY with valid JSON matching this schema:
 
 export const summarizeThread = action({
   args: {
-    clientId: v.id("clients"),
+    clientId:       v.id("clients"),
     conversationId: v.optional(v.id("conversations")),
   },
   handler: async (ctx, args): Promise<{
-    summary: string;
-    arc: string;
+    summary:      string;
+    arc:          string;
     keyDecisions: string[];
-    openItems: string[];
-    toneShift: string | null;
-    actionItems: string[];
+    openItems:    string[];
+    toneShift:    string | null;
+    actionItems:  string[];
+    rateLimited?: boolean;
   }> => {
-    // Get messages for this client (or conversation if specified)
     const messages: Array<Record<string, any>> = await ctx.runQuery(
       internal.messages.getByClientInternal,
       { clientId: args.clientId, limit: 50 }
@@ -209,31 +232,55 @@ export const summarizeThread = action({
 
     if (messages.length < 3) {
       return {
-        summary: "Not enough messages to summarize.",
-        arc: "discovery",
+        summary:      "Not enough messages to summarize.",
+        arc:          "discovery",
         keyDecisions: [],
-        openItems: [],
-        toneShift: null,
-        actionItems: [],
+        openItems:    [],
+        toneShift:    null,
+        actionItems:  [],
       };
     }
 
-    // Check skill is enabled
     const userId = messages[0].userId;
-    const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
+
+    // Single getSkillConfig replaces the previous isSkillEnabled call
+    const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
       userId,
       skillSlug: "thread_summarizer",
     });
-    if (!enabled) {
+    if (!skillConfig.enabled) {
       return {
-        summary: "Thread Summarizer skill is not enabled.",
-        arc: "active",
+        summary:      "Thread Summarizer skill is not enabled.",
+        arc:          "active",
         keyDecisions: [],
-        openItems: [],
-        toneShift: null,
-        actionItems: [],
+        openItems:    [],
+        toneShift:    null,
+        actionItems:  [],
       };
     }
+
+    // Per-user daily rate limit
+    const rateLimitKey = `thread_summarizer:${userId}`;
+    const rateCheck = await ctx.runQuery(api.rateLimit.check, {
+      key:         rateLimitKey,
+      windowMs:    DAILY_WINDOW_MS,
+      maxRequests: THREAD_SUMMARY_DAILY_LIMIT,
+    });
+    if (!rateCheck.allowed) {
+      console.warn(
+        `[ThreadSummarizer] Daily limit reached for user ${userId} — ${rateCheck.count}/${THREAD_SUMMARY_DAILY_LIMIT}`
+      );
+      return {
+        summary:      "Daily summarization limit reached. Try again tomorrow.",
+        arc:          "active",
+        keyDecisions: [],
+        openItems:    [],
+        toneShift:    null,
+        actionItems:  [],
+        rateLimited:  true,
+      };
+    }
+    await ctx.runMutation(api.rateLimit.record, { key: rateLimitKey });
 
     const client: Record<string, any> | null = await ctx.runQuery(
       internal.clients.getInternal,
@@ -241,9 +288,7 @@ export const summarizeThread = action({
     );
 
     // Build thread text — chronological, capped to token budget
-    const sorted = [...messages].sort(
-      (a, b) => a.timestamp - b.timestamp
-    );
+    const sorted = [...messages].sort((a, b) => a.timestamp - b.timestamp);
 
     let threadText = "";
     for (const msg of sorted) {
@@ -268,8 +313,8 @@ ${threadText}`;
       const rawText = await callLLM({
         systemPrompt: THREAD_SUMMARY_SYSTEM,
         userPrompt,
-        maxTokens: 500,
-        preferFast: true,
+        maxTokens:    500,
+        preferFast:   true,
       });
 
       const result = safeParseJson(rawText);
@@ -297,14 +342,14 @@ ${threadText}`;
         await ctx.runMutation(internal.conversationSummaries.upsert, {
           userId,
           conversationId: args.conversationId,
-          clientId: args.clientId,
-          summary: summary.summary,
-          arc: summary.arc,
+          clientId:       args.clientId,
+          summary:        summary.summary,
+          arc:            summary.arc,
           openCommitments: summary.openItems.length,
-          decisionsMade: summary.keyDecisions,
+          decisionsMade:   summary.keyDecisions,
           unresolvedTopics: summary.openItems,
-          toneShift: summary.toneShift ?? undefined,
-          messageCount: messages.length,
+          toneShift:       summary.toneShift ?? undefined,
+          messageCount:    messages.length,
         });
       }
 
@@ -312,12 +357,12 @@ ${threadText}`;
     } catch (err) {
       console.error("Thread summarization failed:", err);
       return {
-        summary: "Failed to generate summary. Please try again.",
-        arc: "active",
+        summary:      "Failed to generate summary. Please try again.",
+        arc:          "active",
         keyDecisions: [],
-        openItems: [],
-        toneShift: null,
-        actionItems: [],
+        openItems:    [],
+        toneShift:    null,
+        actionItems:  [],
       };
     }
   },
@@ -335,58 +380,50 @@ ${threadText}`;
 //   - 0 Claude calls when: skill disabled, conversation unchanged, or < 10 messages
 //   - 1 Haiku call (~$0.002) when a stale/missing summary is detected
 //
-// Max 1 conversation per client per cron cycle to bound costs at scale.
+// Note: auto-summarize bypasses the daily rate limit because it's cron-driven,
+// not user-triggered. Daily limits apply only to interactive (user-click) calls.
 
-const SUMMARIZE_MIN_MESSAGES = 10;        // Don't summarize tiny threads
-const SUMMARIZE_STALE_MS = 24 * 60 * 60 * 1000; // Re-summarize if >24h old
+const SUMMARIZE_MIN_MESSAGES = 10;
+const SUMMARIZE_STALE_MS     = 24 * 60 * 60 * 1000;
 
 export const autoSummarizeForClient = internalAction({
   args: {
     clientId: v.id("clients"),
-    userId: v.id("users"),
+    userId:   v.id("users"),
   },
   handler: async (ctx, args): Promise<void> => {
-    // Respect the user's skill preference — if they've disabled
-    // thread_summarizer, automatic summarization should also stop.
-    const enabled = await ctx.runQuery(internal.skills.isSkillEnabled, {
-      userId: args.userId,
+    // Single getSkillConfig replaces the previous isSkillEnabled call
+    const skillConfig = await ctx.runQuery(internal.skills.getSkillConfig, {
+      userId:    args.userId,
       skillSlug: "thread_summarizer",
     });
-    if (!enabled) return;
+    if (!skillConfig.enabled) return;
 
-    // Get the most-recent active conversation for this client.
-    // We target only the freshest thread — older ones are less actionable.
     const conversation = await ctx.runQuery(
       internal.conversations.getMostRecentActiveByClientInternal,
       { clientId: args.clientId }
     );
     if (!conversation || conversation.messageCount < SUMMARIZE_MIN_MESSAGES) return;
 
-    // Check if an existing summary is still fresh and complete.
     const existing = await ctx.runQuery(
       internal.conversationSummaries.getByConversationInternal,
       { conversationId: conversation._id }
     );
 
-    const now = Date.now();
+    const now     = Date.now();
     const isFresh =
       existing &&
       now - existing.updatedAt < SUMMARIZE_STALE_MS &&
       existing.messageCount >= conversation.messageCount;
 
-    if (isFresh) return; // Nothing to do
+    if (isFresh) return;
 
-    // Summary is stale or missing — run the summarizer.
-    // Re-uses the public summarizeThread action so we don't duplicate the
-    // LLM prompt logic. The action also persists the result via upsert.
     try {
       await ctx.runAction(api.ai.onDemandSkills.summarizeThread, {
-        clientId: args.clientId,
+        clientId:       args.clientId,
         conversationId: conversation._id,
       });
     } catch (err) {
-      // Log but don't throw — health cron must not fail because of a
-      // summarization error on a single client.
       console.error(
         `[AutoSummarize] Failed for client ${args.clientId}:`,
         String(err).split("\n")[0]

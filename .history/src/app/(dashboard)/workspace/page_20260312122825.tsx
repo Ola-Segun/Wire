@@ -478,7 +478,7 @@ export default function WorkspacePage() {
     <div className="h-full flex flex-col animate-fade-in overflow-hidden">
 
       {/* ── Header ── */}
-      <div className="px-5 pt-5 gap-2 shrink-0 flex items-center justify-between">
+      <div className="px-5 pt-5 gap-2 shrink-0 flex items-center justify-between z-50">
         <GlassDateStrip />
         <WorkspaceDynamicToolbar
           editing={editing}
@@ -1603,56 +1603,60 @@ const AgendaWeekWidget = memo(function AgendaWeekWidget({ compact }: { compact?:
       </div>
 
       {/* Overdue strip */}
-      {overdue.length > 0 && (
-        <div className="mb-2 p-2 rounded-lg bg-urgent/5 border border-urgent/20 shrink-0">
-          <p className="text-[9px] font-bold text-urgent uppercase tracking-wider mb-1">
-            {overdue.length} overdue
-          </p>
-          <div className="space-y-0.5">
-            {overdue.slice(0, 2).map((c: any) => (
-              <Link key={c._id} href={`/clients/${c.clientId}`}
-                className="flex items-center gap-1.5 hover:opacity-80">
-                <span className="text-[10px] text-foreground/80 truncate">{c.text}</span>
-                <span className="text-[9px] text-muted-foreground shrink-0">{c.clientName}</span>
-              </Link>
-            ))}
-            {overdue.length > 2 && (
-              <p className="text-[9px] text-urgent font-mono">+{overdue.length - 2} more</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 7-day grid */}
-      <div className="grid gap-1.5 grid-cols-7 mt-1 flex-1 overflow-hidden">
-        {days.map(({ label, dayLabel, isToday, items: dayItems }) => (
-          <div key={label} className="flex flex-col gap-1">
-            {/* Day header */}
-            <div className={`text-center pb-1 border-b ${isToday ? "border-primary/40" : "border-border/20"}`}>
-              <p className={`text-[9px] font-mono uppercase ${isToday ? "text-primary font-bold" : "text-muted-foreground"}`}>
-                {label}
-              </p>
-              <p className={`text-[11px] font-bold ${isToday ? "text-primary" : "text-foreground/60"}`}>
-                {dayLabel}
-              </p>
-            </div>
-            {/* Day items */}
-            <div className="space-y-0.5 overflow-hidden">
-              {dayItems.slice(0, 3).map((c: any) => (
+      <div className="flex flex-col flex-1 min-h-0 min-w-0">
+        {overdue.length > 0 && (
+          <div className="mb-2 p-2 rounded-lg bg-urgent/5 border border-urgent/20 shrink-0">
+            <p className="text-[9px] font-bold text-urgent uppercase tracking-wider mb-1">
+              {overdue.length} overdue
+            </p>
+            <div className="flex gap-2 overflow-x-auto scrollbar-none snap-x pb-1">
+              {overdue.slice(0, 4).map((c: any) => (
                 <Link key={c._id} href={`/clients/${c.clientId}`}
-                  className="block p-0.5 rounded text-[9px] leading-tight text-foreground/70 hover:text-foreground truncate hover:bg-accent/50 transition-colors">
-                  {c.text}
+                  className="flex-none max-w-[120px] hover:opacity-80 snap-start bg-background/40 hover:bg-background/80 transition-colors p-1.5 rounded-lg border border-border/20">
+                  <span className="text-[10px] text-foreground/80 truncate block">{c.text}</span>
+                  <span className="text-[9px] text-muted-foreground shrink-0 block">{c.clientName}</span>
                 </Link>
               ))}
-              {dayItems.length > 3 && (
-                <p className="text-[8px] text-muted-foreground font-mono">+{dayItems.length - 3}</p>
-              )}
-              {dayItems.length === 0 && (
-                <div className="h-1 w-4 rounded-full bg-border/20 mx-auto mt-1" />
+              {overdue.length > 4 && (
+                <p className="text-[9px] text-urgent font-mono flex items-center shrink-0 pr-2">+{overdue.length - 4} more</p>
               )}
             </div>
           </div>
-        ))}
+        )}
+
+        {/* 7-day grid */}
+        <div className="grid gap-1.5 grid-cols-7 mt-1 flex-1 min-h-0">
+          {days.map(({ label, dayLabel, isToday, items: dayItems }) => (
+            <div key={label} className="flex flex-col gap-1 min-w-0">
+              {/* Day header */}
+              <div className={`text-center pb-1 border-b ${isToday ? "border-primary/40" : "border-border/20"}`}>
+                <p className={`text-[9px] font-mono uppercase ${isToday ? "text-primary font-bold" : "text-muted-foreground"}`}>
+                  {label}
+                </p>
+                <p className={`text-[11px] font-bold ${isToday ? "text-primary" : "text-foreground/60"}`}>
+                  {dayLabel}
+                </p>
+              </div>
+              {/* Day items */}
+              <div className="space-y-0.5 overflow-y-auto scrollbar-none flex-1 pb-1">
+                {dayItems.slice(0, 4).map((c: any) => (
+                  <Link key={c._id} href={`/clients/${c.clientId}`}
+                    className="block p-0.5 rounded text-[9px] leading-tight text-foreground/70 hover:text-foreground truncate hover:bg-accent/50 transition-colors border border-transparent hover:border-border/20 mx-[1px]">
+                    {c.text}
+                  </Link>
+                ))}
+                {dayItems.length > 4 && (
+                  <p className="text-[8px] text-muted-foreground font-mono text-center">+{dayItems.length - 4}</p>
+                )}
+                {dayItems.length === 0 && (
+                  <div className="h-4 flex items-center justify-center">
+                    <div className="w-1 h-1 rounded-full bg-border/20" />
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

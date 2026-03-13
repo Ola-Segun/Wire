@@ -426,13 +426,12 @@ export default function InboxPage() {
                                 {msg.aiMetadata.extractedActions.length}
                               </span>
                             )}
-                            {msg.aiMetadata?.dealSignal &&
-                              msg.aiMetadata.dealSignal !== "none" && (
-                                <AiSignalChip
-                                  type="deal"
-                                  label={msg.aiMetadata.dealSignal}
-                                />
-                              )}
+                            {msg.aiMetadata?.dealSignal === true && (
+                              <AiSignalChip
+                                type="deal"
+                                label="Deal signal"
+                              />
+                            )}
                             {(msg.aiMetadata?.churnRisk === "high" ||
                               msg.aiMetadata?.churnRisk === "critical") && (
                               <AiSignalChip

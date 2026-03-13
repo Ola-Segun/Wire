@@ -15,22 +15,8 @@ export const getDailyStats = query({
 
     if (!user) return null;
 
-    // Get all messages for this user
-    const allMessages = await ctx.db
-      .query("messages")
-      .withIndex("by_user", (q) => q.eq("userId", user._id))
-      .order("desc")
-      .take(500);
-
-    // Get unread count
-    const unreadMessages = await ctx.db
-      .query("messages")
-      .withIndex("by_user_unread", (q) =>
-        q.eq("userId", user._id).eq("isRead", false)
-      )
-      .collect();
-
-    // Get active clients
+    // ── Active clients (small set per freelancer: 10-200) ────────────────────
+    // Collect is safe here — this set is bounded by definition.
     const clients = await ctx.db
       .query("clients")
       .withIndex("by_user_active", (q) =>
@@ -38,43 +24,65 @@ export const getDailyStats = query({
       )
       .collect();
 
-    // Calculate stats
-    const urgentCount = allMessages.filter(
-      (m) => m.aiMetadata?.priorityScore && m.aiMetadata.priorityScore >= 70
-    ).length;
+    // ── Recent messages (last 30 days via by_user_timestamp index) ───────────
+    // Uses the new composite index so we read ONLY messages within the window,
+    // not a full-table scan capped at an arbitrary number.
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const todayStart    = new Date();
+    todayStart.setHours(0, 0, 0, 0);
 
-    // Count pending commitments (the source of truth for "action items").
-    // Previously this read raw aiMetadata.extractedActions which never reflects
-    // completion — commitments table is the correct, up-to-date source.
+    // Cap at 500 messages — enough for stats on any active user, prevents
+    // runaway reads for users who imported thousands of historical messages.
+    const recentMessages = await ctx.db
+      .query("messages")
+      .withIndex("by_user_timestamp", (q) =>
+        q.eq("userId", user._id).gte("timestamp", thirtyDaysAgo)
+      )
+      .order("desc")
+      .take(500);
+
+    // ── Unread count ─────────────────────────────────────────────────────────
+    // Separate index query — capped at 999 for badge display.
+    const unreadMessages = await ctx.db
+      .query("messages")
+      .withIndex("by_user_unread", (q) =>
+        q.eq("userId", user._id).eq("isRead", false)
+      )
+      .take(999);
+
+    // ── Pending commitments ──────────────────────────────────────────────────
     const pendingCommitments = await ctx.db
       .query("commitments")
       .withIndex("by_status", (q) =>
         q.eq("userId", user._id).eq("status", "pending")
       )
-      .collect();
+      .take(999);
 
-    const totalMessages = allMessages.length;
+    // ── Stats derived from clients (accurate totals, no scan needed) ─────────
+    // client.totalMessages is kept in sync on every message.create, so summing
+    // is far cheaper and more accurate than counting from the messages table.
+    const totalMessages = clients.reduce((sum, c) => sum + (c.totalMessages ?? 0), 0);
 
-    // Messages today
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const messagesToday = allMessages.filter(
+    // ── Stats derived from recent messages (windowed) ────────────────────────
+    const urgentCount   = recentMessages.filter(
+      (m) => m.aiMetadata?.priorityScore && m.aiMetadata.priorityScore >= 70
+    ).length;
+
+    const messagesToday = recentMessages.filter(
       (m) => m.timestamp >= todayStart.getTime()
     ).length;
 
-    // Sentiment breakdown
-    const sentiments = allMessages.reduce(
+    // Sentiment breakdown over the 30-day window
+    const sentiments = recentMessages.reduce(
       (acc, m) => {
         const sentiment = m.aiMetadata?.sentiment;
-        if (sentiment) {
-          acc[sentiment] = (acc[sentiment] || 0) + 1;
-        }
+        if (sentiment) acc[sentiment] = (acc[sentiment] || 0) + 1;
         return acc;
       },
       {} as Record<string, number>
     );
 
-    // Clients needing attention (low health or frustrated sentiment)
+    // Clients needing attention — derived from pre-computed health score
     const needsAttention = clients.filter(
       (c) => c.relationshipHealth !== undefined && c.relationshipHealth < 50
     );
@@ -82,12 +90,12 @@ export const getDailyStats = query({
     return {
       totalMessages,
       messagesToday,
-      unreadCount: unreadMessages.length,
+      unreadCount:       unreadMessages.length,
       urgentCount,
-      actionItemCount: pendingCommitments.length,
+      actionItemCount:   pendingCommitments.length,
       activeClientCount: clients.length,
       sentiments,
-      needsAttention: needsAttention.length,
+      needsAttention:    needsAttention.length,
     };
   },
 });

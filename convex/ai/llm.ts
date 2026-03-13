@@ -7,6 +7,15 @@
 // Primary:  Anthropic (claude-haiku / claude-sonnet)
 // Fallback: NVIDIA NIM (OpenAI-compatible endpoint)
 //
+// All model names are environment-variable overrideable so you can swap
+// models without a code deploy:
+//
+//   ANTHROPIC_FAST_MODEL    — fast/cheap model (default: claude-haiku-4-5-20251001)
+//   ANTHROPIC_QUALITY_MODEL — quality model    (default: claude-sonnet-4-20250514)
+//   NVIDIA_QUALITY_MODEL    — NVIDIA quality override (default: meta/llama-3.3-70b-instruct)
+//   NVIDIA_FAST_MODEL       — NVIDIA fast override    (default: meta/llama-3.1-8b-instruct)
+//   DISABLE_NVIDIA_FALLBACK — set to "true" to throw instead of falling back
+//
 // Fallback triggers automatically on:
 //   - Billing / quota errors  (401, 402, "credit balance too low")
 //   - Rate limits             (429)
@@ -17,18 +26,6 @@
 //   - Transient errors (5xx, network) → up to ANTHROPIC_MAX_RETRIES attempts
 //     with exponential backoff before switching to NVIDIA.
 //   - Hard errors (401/402/auth) → immediate fallback, no retry.
-//
-// Environment variables:
-//   ANTHROPIC_API_KEY         — Anthropic key (primary)
-//   NVIDIA_API_KEY            — NVIDIA NIM key (fallback)
-//   NVIDIA_QUALITY_MODEL      — Quality model override (default: meta/llama-3.3-70b-instruct)
-//   NVIDIA_FAST_MODEL         — Fast model override (default: meta/llama-3.1-8b-instruct)
-//
-// Usage:
-//   import { callLLM } from "./llm";
-//   const text = await callLLM({ systemPrompt, userPrompt, maxTokens, preferFast });
-//
-// Model constants are exported so callers can reference them without re-declaring.
 
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -42,22 +39,50 @@ export interface LLMOptions {
   preferFast?: boolean;
 }
 
-// ─── Exported model constants ─────────────────────────────────────────────────
-// Single source of truth — import these in callers rather than re-declaring.
+export interface LLMResult {
+  text: string;
+  /** Which provider actually served the response. */
+  provider: "anthropic" | "nvidia";
+  /** Which model was used. */
+  model: string;
+}
 
-export const ANTHROPIC_FAST_MODEL    = "claude-haiku-4-5-20251001";
-export const ANTHROPIC_QUALITY_MODEL = "claude-sonnet-4-20250514";
+// ─── Exported model constants (defaults, overrideable via ENV) ─────────────────
+// These are the compile-time defaults. At runtime, getModelNames() reads ENV
+// overrides. Always use getModelNames() in runtime code; use these constants
+// only where you need a compile-time default (e.g. type references).
 
-// ─── Internal model config ────────────────────────────────────────────────────
+export const ANTHROPIC_FAST_MODEL_DEFAULT    = "claude-haiku-4-5-20251001";
+export const ANTHROPIC_QUALITY_MODEL_DEFAULT = "claude-sonnet-4-20250514";
+
+// For backward compat — callers that imported these names still compile.
+export const ANTHROPIC_FAST_MODEL    = ANTHROPIC_FAST_MODEL_DEFAULT;
+export const ANTHROPIC_QUALITY_MODEL = ANTHROPIC_QUALITY_MODEL_DEFAULT;
+
+// ─── Runtime model name resolution ────────────────────────────────────────────
+// Reads ENV at call time so hot-swapping models via deployment env vars works
+// without redeploying code.
+
+export function getModelNames(): {
+  anthropicFast:    string;
+  anthropicQuality: string;
+  nvidiaFast:       string;
+  nvidiaQuality:    string;
+} {
+  return {
+    anthropicFast:    process.env.ANTHROPIC_FAST_MODEL    ?? ANTHROPIC_FAST_MODEL_DEFAULT,
+    anthropicQuality: process.env.ANTHROPIC_QUALITY_MODEL ?? ANTHROPIC_QUALITY_MODEL_DEFAULT,
+    nvidiaFast:       process.env.NVIDIA_FAST_MODEL       ?? "meta/llama-3.1-8b-instruct",
+    nvidiaQuality:    process.env.NVIDIA_QUALITY_MODEL    ?? "meta/llama-3.3-70b-instruct",
+  };
+}
+
+// ─── Internal config ─────────────────────────────────────────────────────────
 
 const NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1";
-// Quality: large reasoning model for complex analysis
-const NVIDIA_QUALITY_DEFAULT = "meta/llama-3.3-70b-instruct";
-// Fast: smaller model for simple/cheap tasks (daily briefing narrative, smart replies)
-const NVIDIA_FAST_DEFAULT    = "meta/llama-3.1-8b-instruct";
 
 // Anthropic retry config — transient errors only
-const ANTHROPIC_MAX_RETRIES = 2;
+const ANTHROPIC_MAX_RETRIES   = 2;
 const ANTHROPIC_BASE_DELAY_MS = 500; // 500ms, 1000ms
 
 // ─── Error classification ─────────────────────────────────────────────────────
@@ -87,19 +112,20 @@ function isTransientError(err: unknown): boolean {
   return false;
 }
 
-/** Any error that should trigger fallback to NVIDIA (hard or transient after retries). */
+/** Any error that should trigger fallback to NVIDIA. */
 function isFallbackTrigger(err: unknown): boolean {
   return isHardError(err) || isTransientError(err);
 }
 
 // ─── Anthropic call with retry ────────────────────────────────────────────────
 
-async function callAnthropic(opts: LLMOptions): Promise<string> {
+async function callAnthropic(opts: LLMOptions): Promise<LLMResult> {
   const anthropic = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
   });
 
-  const model = opts.preferFast ? ANTHROPIC_FAST_MODEL : ANTHROPIC_QUALITY_MODEL;
+  const models = getModelNames();
+  const model  = opts.preferFast ? models.anthropicFast : models.anthropicQuality;
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= ANTHROPIC_MAX_RETRIES; attempt++) {
@@ -120,7 +146,7 @@ async function callAnthropic(opts: LLMOptions): Promise<string> {
 
       const block = response.content.find((b) => b.type === "text");
       if (!block || block.type !== "text") throw new Error("No text in Anthropic response");
-      return block.text;
+      return { text: block.text, provider: "anthropic", model };
     } catch (err) {
       lastErr = err;
       // Hard errors (billing/auth) — don't retry, fail immediately so caller can fallback
@@ -128,11 +154,14 @@ async function callAnthropic(opts: LLMOptions): Promise<string> {
       // Transient errors — retry with backoff, except on last attempt
       if (isTransientError(err) && attempt < ANTHROPIC_MAX_RETRIES) {
         const delay = ANTHROPIC_BASE_DELAY_MS * Math.pow(2, attempt);
-        console.warn(`[LLM/Anthropic] Transient error (attempt ${attempt + 1}/${ANTHROPIC_MAX_RETRIES + 1}), retrying in ${delay}ms:`, String(err).split("\n")[0]);
+        console.warn(
+          `[LLM/Anthropic] Transient error (attempt ${attempt + 1}/${ANTHROPIC_MAX_RETRIES + 1}), retrying in ${delay}ms:`,
+          String(err).split("\n")[0]
+        );
         await new Promise((r) => setTimeout(r, delay));
         continue;
       }
-      // Non-transient, non-hard errors (bad prompt shape, etc.) — propagate immediately
+      // Non-transient, non-hard errors (bad prompt shape, etc.) — propagate
       throw err;
     }
   }
@@ -142,14 +171,12 @@ async function callAnthropic(opts: LLMOptions): Promise<string> {
 
 // ─── NVIDIA NIM call (OpenAI-compatible) ─────────────────────────────────────
 
-async function callNvidia(opts: LLMOptions): Promise<string> {
+async function callNvidia(opts: LLMOptions): Promise<LLMResult> {
   const apiKey = process.env.NVIDIA_API_KEY;
   if (!apiKey) throw new Error("NVIDIA_API_KEY is not set — cannot use fallback provider");
 
-  // Honor preferFast on the fallback provider too
-  const qualityModel = process.env.NVIDIA_QUALITY_MODEL ?? NVIDIA_QUALITY_DEFAULT;
-  const fastModel    = process.env.NVIDIA_FAST_MODEL    ?? NVIDIA_FAST_DEFAULT;
-  const model = opts.preferFast ? fastModel : qualityModel;
+  const models = getModelNames();
+  const model  = opts.preferFast ? models.nvidiaFast : models.nvidiaQuality;
 
   const res = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
     method: "POST",
@@ -179,22 +206,35 @@ async function callNvidia(opts: LLMOptions): Promise<string> {
 
   const text = data.choices?.[0]?.message?.content;
   if (!text) throw new Error("No content in NVIDIA NIM response");
-  return text;
+  return { text, provider: "nvidia", model };
 }
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 /**
  * Call the LLM with automatic retry and provider fallback.
+ * Returns the response text (backward-compatible with previous callers).
  *
  * Strategy:
  *   1. No ANTHROPIC_API_KEY → go straight to NVIDIA NIM.
- *   2. Anthropic hard error (billing/auth) → immediate fallback to NVIDIA.
- *   3. Anthropic transient error (5xx/429/network) → retry up to 2x with
+ *   2. DISABLE_NVIDIA_FALLBACK=true → never fall back; throw on Anthropic error.
+ *   3. Anthropic hard error (billing/auth) → immediate fallback to NVIDIA.
+ *   4. Anthropic transient error (5xx/429/network) → retry up to 2x with
  *      exponential backoff, then fall back to NVIDIA.
- *   4. Unknown error → propagate (don't silently swallow unexpected failures).
+ *   5. Unknown error → propagate (don't silently swallow unexpected failures).
  */
 export async function callLLM(opts: LLMOptions): Promise<string> {
+  const result = await callLLMWithMeta(opts);
+  return result.text;
+}
+
+/**
+ * Like callLLM but returns { text, provider, model } for callers that want
+ * observability into which provider/model served the response.
+ */
+export async function callLLMWithMeta(opts: LLMOptions): Promise<LLMResult> {
+  const fallbackDisabled = process.env.DISABLE_NVIDIA_FALLBACK === "true";
+
   if (!process.env.ANTHROPIC_API_KEY) {
     console.log("[LLM] No ANTHROPIC_API_KEY — using NVIDIA NIM directly");
     return callNvidia(opts);
@@ -203,8 +243,15 @@ export async function callLLM(opts: LLMOptions): Promise<string> {
   try {
     return await callAnthropic(opts);
   } catch (err) {
+    if (fallbackDisabled) {
+      console.error("[LLM] Anthropic error and DISABLE_NVIDIA_FALLBACK=true — not falling back");
+      throw err;
+    }
     if (isFallbackTrigger(err)) {
-      console.warn("[LLM] Falling back to NVIDIA NIM after Anthropic error:", String(err).split("\n")[0]);
+      console.warn(
+        "[LLM] Falling back to NVIDIA NIM after Anthropic error:",
+        String(err).split("\n")[0]
+      );
       return callNvidia(opts);
     }
     throw err;

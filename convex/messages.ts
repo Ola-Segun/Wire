@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { internalQuery, mutation, query } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 
 // ============================================
 // HELPERS — batch client name resolution
@@ -110,6 +110,32 @@ export const create = mutation({
       await ctx.scheduler.runAfter(0, api.ai.unified.analyzeMessage, {
         messageId,
       });
+    }
+
+    // Early intelligence hydration for new clients.
+    // client.intelligence is null until the health cron runs (every 4h), which
+    // means the writing assistant and smart replies have no relationship context
+    // for fresh clients. By scheduling computeForClient after the 3rd-6th message,
+    // we ensure intelligence is ready within ~30 seconds of the first conversation.
+    //
+    // Only fires for the first 6 messages (after that, the 4-hour cron takes over)
+    // and only on inbound messages (we need analysable content to aggregate).
+    if (client) {
+      const newTotal = client.totalMessages + 1; // +1 from the patch above
+      if (
+        args.direction === "inbound" &&
+        newTotal >= 3 &&
+        newTotal <= 6 &&
+        !client.intelligence
+      ) {
+        // 30s delay gives the analyzeMessage action time to persist aiMetadata
+        // before computeForClient aggregates it into client intelligence.
+        await ctx.scheduler.runAfter(
+          30_000,
+          internal.ai.clientIntelligence.computeForClient,
+          { clientId: args.clientId }
+        );
+      }
     }
 
     return messageId;

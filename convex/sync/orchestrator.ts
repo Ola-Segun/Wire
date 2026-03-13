@@ -106,18 +106,32 @@ async function buildSyncTasks(
       );
     }
 
+    // Group identities by clientId so that multiple identities for the same
+    // client (e.g. Gmail + Slack) are synced sequentially within one task.
+    // This prevents concurrent writes to the same conversations row that caused
+    // 800+ OCC retries and 3 write-conflict failures.
+    const byClient = new Map<string, typeof linkedIdentities>();
     for (const identity of linkedIdentities) {
+      const cid = identity.clientId as string;
+      if (!byClient.has(cid)) byClient.set(cid, []);
+      byClient.get(cid)!.push(identity);
+    }
+
+    for (const [, clientIdentities] of byClient) {
       tasks.push(async () => {
-        await withRetry(
-          async () => {
-            await ctx.runAction(syncAction, {
-              userId,
-              identityId: identity._id,
-            });
-          },
-          MAX_RETRIES,
-          `sync ${platform} user=${userId} identity=${identity._id}`
-        );
+        // Run each identity's sync sequentially within the same client
+        for (const identity of clientIdentities) {
+          await withRetry(
+            async () => {
+              await ctx.runAction(syncAction, {
+                userId,
+                identityId: identity._id,
+              });
+            },
+            MAX_RETRIES,
+            `sync ${platform} user=${userId} identity=${identity._id}`
+          );
+        }
       });
     }
   }
