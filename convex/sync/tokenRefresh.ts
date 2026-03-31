@@ -1,7 +1,7 @@
 "use node";
 
 import { action } from "../_generated/server";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { google } from "googleapis";
 
 // Refresh expired Gmail tokens proactively
@@ -10,7 +10,7 @@ export const refreshGmailTokens = action({
   args: {},
   handler: async (ctx): Promise<{ refreshed: number; errors: number }> => {
     const connections: Array<{ userId: any; platform: string }> =
-      await ctx.runQuery(api.oauth.listAllConnections, {});
+      await ctx.runQuery(internal.oauth.listAllConnections, {});
 
     const gmailConnections = connections.filter((c) => c.platform === "gmail");
     let refreshed = 0;
@@ -68,7 +68,7 @@ export const validateSlackTokens = action({
     const { WebClient } = await import("@slack/web-api");
 
     const connections: Array<{ userId: any; platform: string }> =
-      await ctx.runQuery(api.oauth.listAllConnections, {});
+      await ctx.runQuery(internal.oauth.listAllConnections, {});
 
     const slackConnections = connections.filter((c) => c.platform === "slack");
     let valid = 0;

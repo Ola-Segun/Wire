@@ -5,7 +5,9 @@ import { useQuery, useMutation, useAction } from "convex/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api } from "@/convex/_generated/api";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { PLATFORMS, PLATFORM_LABELS, type PlatformType } from "@/lib/constants";
 import {
   Inbox,
@@ -15,8 +17,6 @@ import {
   Filter,
   Zap,
   Mail,
-  MessageSquare,
-  Phone,
   Eye,
   X,
   ExternalLink,
@@ -32,19 +32,14 @@ import {
 } from "lucide-react";
 import { formatRelativeTime, formatMessageTime } from "@/lib/date-utils";
 import Link from "next/link";
+import { getPlatformIconComponent, PlatformBadge } from "@/lib/platform-icons";
 
 type FilterType = "all" | "unread" | "urgent" | "starred";
 type PlatformFilter = "all" | PlatformType;
 
-const PLATFORM_ICONS: Record<PlatformType, typeof Mail> = {
-  gmail: Mail,
-  slack: MessageSquare,
-  whatsapp: Phone,
-  discord: MessageSquare,
-};
-
 export default function InboxPage() {
   const { user } = useCurrentUser();
+  const router = useRouter();
   const [filter, setFilter] = useState<FilterType>("unread");
   const [platformFilter, setPlatformFilter] = useState<PlatformFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -55,11 +50,11 @@ export default function InboxPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
 
   // Debounce search input
-  const searchTimeoutRef = useState<ReturnType<typeof setTimeout> | null>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleSearchChange = (value: string) => {
     setSearchQuery(value);
-    if (searchTimeoutRef[0]) clearTimeout(searchTimeoutRef[0]);
-    searchTimeoutRef[0] = setTimeout(
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(
       () => setDebouncedSearch(value.trim()),
       300
     );
@@ -154,6 +149,10 @@ export default function InboxPage() {
 
   const handleSelectMessage = (msg: Record<string, any>) => {
     setSelectedId(msg._id);
+    // On mobile/tablet (no detail panel visible), navigate to client profile
+    if (typeof window !== "undefined" && window.innerWidth < 1024 && msg.clientId) {
+      router.push(`/clients/${msg.clientId}`);
+    }
   };
 
   const handleToggleStar = async (e: React.MouseEvent, id: string) => {
@@ -322,7 +321,7 @@ export default function InboxPage() {
               All
             </button>
             {PLATFORMS.map((p) => {
-              const Icon = PLATFORM_ICONS[p];
+              const Icon = getPlatformIconComponent(p);
               return (
                 <button
                   key={p}
@@ -407,6 +406,7 @@ export default function InboxPage() {
                               msg.aiMetadata.priorityScore >= 60 && (
                                 <PriorityIndicator
                                   score={msg.aiMetadata.priorityScore}
+                                  tooltip={`Priority score ${msg.aiMetadata.priorityScore}/100 — based on urgency, sentiment, and action items`}
                                 />
                               )}
                           </div>
@@ -439,7 +439,7 @@ export default function InboxPage() {
                                 label={msg.aiMetadata.churnRisk}
                               />
                             )}
-                            {msg.aiMetadata?.hiddenRequests?.length > 0 && (
+                            {msg.aiMetadata?.hiddenRequests && msg.aiMetadata.hiddenRequests.length > 0 && (
                               <AiSignalChip type="hidden" label="concern" />
                             )}
                           </div>
@@ -623,14 +623,13 @@ export default function InboxPage() {
                     {/* Row 2: deal / churn / hidden — only render when present */}
                     {(selectedMessage.aiMetadata.dealSignal ||
                       selectedMessage.aiMetadata.churnRisk ||
-                      selectedMessage.aiMetadata.hiddenRequests?.length > 0 ||
+                      (selectedMessage.aiMetadata.hiddenRequests && selectedMessage.aiMetadata.hiddenRequests.length > 0) ||
                       selectedMessage.aiMetadata.valueSignal) && (
                       <div className="flex items-start gap-2 flex-wrap">
-                        {selectedMessage.aiMetadata.dealSignal &&
-                          selectedMessage.aiMetadata.dealSignal !== "none" && (
+                        {selectedMessage.aiMetadata.dealSignal && (
                             <div className="flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full bg-success/10 text-success font-medium">
                               <DollarSign className="h-2.5 w-2.5" />
-                              {selectedMessage.aiMetadata.dealSignal}
+                              Deal Signal
                             </div>
                           )}
                         {selectedMessage.aiMetadata.churnRisk &&
@@ -653,7 +652,7 @@ export default function InboxPage() {
                               {selectedMessage.aiMetadata.valueSignal}
                             </div>
                           )}
-                        {selectedMessage.aiMetadata.hiddenRequests?.length > 0 && (
+                        {selectedMessage.aiMetadata.hiddenRequests && selectedMessage.aiMetadata.hiddenRequests.length > 0 && (
                           <div className="flex items-center gap-1 text-[10px] px-2.5 py-1 rounded-full bg-warning/10 text-warning font-medium">
                             <AlertTriangle className="h-2.5 w-2.5" />
                             {selectedMessage.aiMetadata.hiddenRequests[0]}
@@ -738,40 +737,31 @@ export default function InboxPage() {
   );
 }
 
-const PlatformBadge = memo(function PlatformBadge({ platform }: { platform: string }) {
-  const colors: Record<string, string> = {
-    gmail: "bg-urgent/10 text-urgent",
-    slack: "bg-chart-4/10 text-chart-4",
-    whatsapp: "bg-success/10 text-success",
-    discord: "bg-primary/10 text-primary",
-  };
+const PriorityIndicator = memo(function PriorityIndicator({ score, tooltip }: { score: number; tooltip?: string }) {
+  const title = tooltip ?? `Priority score ${score}/100`;
+  
+  const content = score >= 80 ? (
+    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-urgent/10 text-urgent cursor-help">
+      P{score}
+    </span>
+  ) : score >= 60 ? (
+    <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-warning/10 text-warning cursor-help">
+      P{score}
+    </span>
+  ) : null;
+
+  if (!content) return null;
 
   return (
-    <Badge
-      variant="secondary"
-      className={`text-[10px] font-mono ${colors[platform] ?? "bg-muted text-muted-foreground"}`}
-    >
-      {platform}
-    </Badge>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {content}
+      </TooltipTrigger>
+      <TooltipContent>
+        <p>{title}</p>
+      </TooltipContent>
+    </Tooltip>
   );
-});
-
-const PriorityIndicator = memo(function PriorityIndicator({ score }: { score: number }) {
-  if (score >= 80) {
-    return (
-      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-urgent/10 text-urgent">
-        P{score}
-      </span>
-    );
-  }
-  if (score >= 60) {
-    return (
-      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-warning/10 text-warning">
-        P{score}
-      </span>
-    );
-  }
-  return null;
 });
 
 const SentimentDot = memo(function SentimentDot({ sentiment }: { sentiment: string }) {

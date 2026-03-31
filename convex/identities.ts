@@ -152,6 +152,7 @@ export const createSelected = mutation({
     username: v.optional(v.string()),
     email: v.optional(v.string()),
     avatar: v.optional(v.string()),
+    phoneNumber: v.optional(v.string()),
     messageCount: v.number(),
     firstSeenAt: v.number(),
     lastSeenAt: v.number(),

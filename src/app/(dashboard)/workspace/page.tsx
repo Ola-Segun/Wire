@@ -28,6 +28,7 @@ import {
   ChevronLeft,
   ChevronRight,
   GripVertical,
+  Pen
 } from "lucide-react";
 import {
   DndContext,
@@ -123,52 +124,66 @@ const SIZE_CLASSES: Record<string, string> = {
 function WorkspaceStatsPanel() {
   const stats = useQuery(api.analytics.getDailyStats);
   const METRICS = [
-    { label: "Unread",  key: "unreadCount",      color: "text-primary", bg: "bg-primary/10", icon: Inbox },
-    { label: "Urgent",  key: "urgentCount",       color: "text-urgent",  bg: "bg-urgent/10",  icon: AlertTriangle },
-    { label: "Actions", key: "actionItemCount",   color: "text-warning", bg: "bg-warning/10", icon: Zap },
-    { label: "Clients", key: "activeClientCount", color: "text-success", bg: "bg-success/10", icon: Users },
+    { label: "Unread",  key: "unreadCount",      color: "text-primary", bg: "bg-primary/10",  bar: "bg-primary",  icon: Inbox },
+    { label: "Urgent",  key: "urgentCount",       color: "text-urgent",  bg: "bg-urgent/10",   bar: "bg-urgent",   icon: AlertTriangle },
+    { label: "Actions", key: "actionItemCount",   color: "text-warning", bg: "bg-warning/10",  bar: "bg-warning",  icon: Zap },
+    { label: "Clients", key: "activeClientCount", color: "text-success", bg: "bg-success/10",  bar: "bg-success",  icon: Users },
   ] as const;
   return (
-    <div className="surface-raised rounded-xl p-3 grid grid-cols-2 gap-2 shrink-0">
-      {METRICS.map(({ label, key, color, bg, icon: Icon }) => (
-        <div key={label} className="flex flex-col gap-1.5 p-2.5 rounded-lg bg-background/40 border border-border/20">
-          <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${bg}`}>
-            <Icon className={`h-3.5 w-3.5 ${color}`} />
+    <div className="surface-raised rounded-xl p-3 shrink-0 space-y-1.5">
+      <p className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground/50 px-1 pb-1">Overview</p>
+      {METRICS.map(({ label, key, color, bg, bar, icon: Icon }) => {
+        const value = (stats as any)?.[key] ?? 0;
+        return (
+          <div key={label} className="flex items-center gap-2.5 px-1 py-1.5 rounded-lg hover:bg-accent/30 transition-colors">
+            <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${bg}`}>
+              <Icon className={`h-3 w-3 ${color}`} />
+            </div>
+            <span className="text-[11px] text-muted-foreground flex-1">{label}</span>
+            <span className={`text-sm font-mono font-bold ${color}`}>
+              <NumberTicker value={value} />
+            </span>
           </div>
-          <p className={`text-xl font-mono font-bold leading-none ${color}`}>
-            <NumberTicker value={(stats as any)?.[key] ?? 0} />
-          </p>
-          <p className="text-[10px] text-muted-foreground">{label}</p>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
 function WorkspaceClientPanel() {
   const clients = useQuery(api.clients.getByUser, { sortBy: "health" });
+  const atRisk = (clients ?? []).filter((c: any) => (c.relationshipHealth ?? 50) < 40).length;
   return (
     <div className="surface-raised rounded-xl p-3 flex flex-col gap-2 flex-1 min-h-0 overflow-hidden">
       <div className="flex items-center justify-between shrink-0">
-        <span className="text-xs font-semibold text-foreground">Clients</span>
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-semibold text-foreground">Clients</span>
+          {atRisk > 0 && (
+            <span className="text-[9px] font-mono font-bold bg-urgent/10 text-urgent px-1.5 py-0.5 rounded-full">
+              {atRisk} at risk
+            </span>
+          )}
+        </div>
         <Link href="/clients" className="text-[10px] text-primary hover:text-primary/80 font-medium">View all</Link>
       </div>
-      <div className="overflow-y-auto scrollbar-thin space-y-1 flex-1">
-        {(clients ?? []).slice(0, 10).map((c: any) => {
+      <div className="overflow-y-auto scrollbar-thin space-y-0.5 flex-1">
+        {!clients ? (
+          <div className="flex justify-center py-4"><Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /></div>
+        ) : (clients).slice(0, 10).map((c: any) => {
           const h = c.relationshipHealth ?? 50;
           const color = h >= 70 ? "text-success" : h >= 40 ? "text-warning" : "text-urgent";
           const bg   = h >= 70 ? "bg-success/10" : h >= 40 ? "bg-warning/10" : "bg-urgent/10";
           return (
             <Link key={c._id} href={`/clients/${c._id}`}
-              className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-accent/50 transition-colors"
+              className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-accent/40 transition-colors group"
             >
               <div className={`w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-bold shrink-0 ${bg} ${color}`}>
-                {c.name.slice(0, 2).toUpperCase()}
+                {c.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase()}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-medium text-foreground truncate">{c.name}</p>
+                <p className="text-[11px] font-medium text-foreground truncate group-hover:text-primary transition-colors">{c.name}</p>
                 <div className="w-full h-0.5 rounded-full bg-border/30 mt-0.5">
-                  <div className={`h-full rounded-full ${h >= 70 ? "bg-success" : h >= 40 ? "bg-warning" : "bg-urgent"}`} style={{ width: `${h}%` }} />
+                  <div className={`h-full rounded-full transition-all ${h >= 70 ? "bg-success" : h >= 40 ? "bg-warning" : "bg-urgent"}`} style={{ width: `${h}%` }} />
                 </div>
               </div>
               <span className={`text-[9px] font-mono font-bold shrink-0 ${color}`}>{h}</span>
@@ -183,47 +198,55 @@ function WorkspaceClientPanel() {
 function WorkspaceActionsPanel() {
   const items = useQuery(api.commitments.getPendingWithClients);
   const complete = useMutation(api.commitments.complete);
+  const overdueCount = (items ?? []).filter((i: any) => i.isOverdue).length;
 
   return (
     <div className="surface-raised rounded-xl p-3 flex flex-col gap-2 flex-1 min-h-0">
       <div className="flex items-center justify-between shrink-0">
-        <span className="text-xs font-semibold text-foreground">Action Items</span>
-        <Link href="/calendar" className="text-[10px] text-primary hover:text-primary/80 font-medium">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-semibold text-foreground">Action Items</span>
+          {overdueCount > 0 && (
+            <span className="text-[9px] font-mono font-bold bg-urgent/10 text-urgent px-1.5 py-0.5 rounded-full">
+              {overdueCount} overdue
+            </span>
+          )}
+        </div>
+        <Link href="/pulse" className="text-[10px] text-primary hover:text-primary/80 font-medium">
           View all
         </Link>
       </div>
-      <div className="overflow-y-auto scrollbar-thin space-y-1.5 flex-1 min-h-0">
-        {items && items.length > 0 ? items.map((item: any) => (
+      <div className="overflow-y-auto scrollbar-thin space-y-1 flex-1 min-h-0">
+        {items === undefined ? (
+          <div className="flex-1 flex items-center justify-center">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+          </div>
+        ) : items.length > 0 ? items.map((item: any) => (
           <div
             key={item._id}
-            className={`p-2 rounded-lg border group transition-colors ${
-              item.isOverdue ? "border-urgent/30 bg-urgent/5" : "border-border/20 hover:border-border/40"
+            className={`flex items-start gap-2 p-2 rounded-lg border group transition-colors cursor-pointer ${
+              item.isOverdue
+                ? "border-urgent/20 bg-urgent/[0.03] hover:bg-urgent/[0.05]"
+                : "border-border/20 hover:border-border/40 hover:bg-accent/30"
             }`}
+            onClick={() => complete({ id: item._id })}
           >
-            <div className="flex items-start gap-1.5">
-              <button
-                onClick={() => complete({ id: item._id })}
-                className="mt-0.5 shrink-0 w-3.5 h-3.5 rounded-full border border-border/60 hover:border-primary hover:bg-primary/10 transition-colors"
-              />
-              <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-medium text-foreground leading-tight line-clamp-1">{item.title}</p>
-                {item.text && item.text !== item.title && (
-                  <p className="text-[10px] text-foreground/60 line-clamp-1 mt-0.5 italic">{item.text}</p>
+            <div className="mt-0.5 shrink-0 w-3.5 h-3.5 rounded border border-border/60 group-hover:border-primary/50 group-hover:bg-primary/5 transition-colors" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[11px] font-medium text-foreground leading-tight line-clamp-1">{item.text ?? item.title}</p>
+              <div className="flex items-center gap-1 mt-0.5">
+                <span className="text-[10px] text-muted-foreground truncate">{item.clientName ?? "No client"}</span>
+                {item.dueDate && (
+                  <span className={`text-[9px] font-mono shrink-0 ${item.isOverdue ? "text-urgent font-bold" : "text-muted-foreground/60"}`}>
+                    · {item.isOverdue ? "⚠ " : ""}{format(new Date(item.dueDate), "MMM d")}
+                  </span>
                 )}
-                <p className="text-[10px] text-muted-foreground truncate mt-0.5">
-                  {item.clientName ?? "No client"}
-                  {item.dueDate && (
-                    <span className={`ml-1 ${item.isOverdue ? "text-urgent font-semibold" : ""}`}>
-                      · {item.isOverdue ? "Overdue · " : ""}{format(new Date(item.dueDate), "MMM d")}
-                    </span>
-                  )}
-                </p>
               </div>
             </div>
           </div>
         )) : (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground text-[11px]">
-            All clear!
+          <div className="flex-1 flex flex-col items-center justify-center gap-1 py-4 text-muted-foreground">
+            <CheckCircle2 className="h-5 w-5 opacity-20" />
+            <span className="text-[11px]">All clear!</span>
           </div>
         )}
       </div>
@@ -468,8 +491,28 @@ export default function WorkspacePage() {
 
   if (layout === undefined) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="animate-pulse text-muted-foreground">Loading workspace...</div>
+      <div className="h-full flex flex-col overflow-hidden animate-fade-in">
+        {/* Skeleton header */}
+        <div className="px-5 pt-5 pb-3 shrink-0 flex items-center justify-between">
+          <div className="h-9 w-48 rounded-full bg-muted/40 animate-pulse" />
+          <div className="h-11 w-44 rounded-full bg-muted/40 animate-pulse" />
+        </div>
+        {/* Skeleton body */}
+        <div className="flex-1 flex gap-4 px-5 pb-5 min-h-0 overflow-hidden">
+          <div className="w-[220px] shrink-0 flex flex-col gap-3">
+            <div className="h-36 rounded-xl bg-muted/30 animate-pulse" />
+            <div className="flex-1 rounded-xl bg-muted/30 animate-pulse" />
+          </div>
+          <div className="flex-1 grid grid-cols-4 gap-4 auto-rows-[180px] content-start">
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className={`rounded-xl bg-muted/30 animate-pulse ${i % 3 === 0 ? "col-span-2 row-span-2" : i % 2 === 0 ? "col-span-2" : "col-span-1"}`} />
+            ))}
+          </div>
+          <div className="w-[240px] shrink-0 flex flex-col gap-3">
+            <div className="flex-1 rounded-xl bg-muted/30 animate-pulse" />
+            <div className="h-40 rounded-xl bg-muted/30 animate-pulse" />
+          </div>
+        </div>
       </div>
     );
   }
@@ -478,21 +521,38 @@ export default function WorkspacePage() {
     <div className="h-full flex flex-col animate-fade-in overflow-hidden">
 
       {/* ── Header ── */}
-      <div className="px-5 pt-5 gap-2 shrink-0 flex items-center justify-between">
+      <div className={`px-5 pt-5 pb-3 shrink-0 flex items-center justify-between transition-colors duration-300 ${
+        editing ? "border-b border-primary/20 bg-primary/[0.02]" : ""
+      }`}>
         <GlassDateStrip />
-        <WorkspaceDynamicToolbar
-          editing={editing}
-          onToggleEdit={() => setEditing(!editing)}
-          onAddWidget={handleAddWidget}
-          widgetRegistry={WIDGET_REGISTRY}
-        />
+        <div className="flex items-center gap-2">
+          {editing && (
+            <motion.div
+              initial={{ opacity: 0, x: 8 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 8 }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-primary/10 border border-primary/20"
+            >
+              <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+              <span className="text-[11px] font-medium text-primary">
+                <Pen className="h-3 w-3" />
+              </span>
+            </motion.div>
+          )}
+          <WorkspaceDynamicToolbar
+            editing={editing}
+            onToggleEdit={() => setEditing(!editing)}
+            onAddWidget={handleAddWidget}
+            widgetRegistry={WIDGET_REGISTRY}
+          />
+        </div>
       </div>
 
       {/* ── Three-column body ── */}
       <div className="flex-1 flex gap-4 px-5 py-3 min-h-0 overflow-hidden">
 
         {/* Left panel */}
-        <div className="w-[220px] shrink-0 flex flex-col gap-3 overflow-hidden">
+        <div className="w-[220px] shrink-0 hidden lg:flex flex-col gap-3 overflow-hidden">
           <WorkspaceStatsPanel />
           <WorkspaceClientPanel />
         </div>
@@ -502,32 +562,48 @@ export default function WorkspacePage() {
           {localWidgets.length > 0 ? (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
               <SortableContext items={localWidgets.map((w) => w.id)} strategy={rectSortingStrategy}>
-                <div className="grid grid-cols-4 gap-4 auto-rows-[180px]">
-                  {localWidgets.map((widget: Record<string, any>) => (
-                    <SortableWidget
-                      key={widget.id}
-                      id={widget.id}
-                      className={SIZE_CLASSES[widget.size] ?? "col-span-1 row-span-1"}
-                      editing={editing}
-                      onRemove={() => handleRemoveWidget(widget.id)}
-                    >
-                      <WidgetRenderer type={widget.type} size={widget.size} config={widget.config} />
-                    </SortableWidget>
-                  ))}
+                <div className="grid grid-cols-4 gap-4 auto-rows-[180px] pb-24">
+                  <AnimatePresence initial={false}>
+                    {localWidgets.map((widget: Record<string, any>) => (
+                      <SortableWidget
+                        key={widget.id}
+                        id={widget.id}
+                        className={SIZE_CLASSES[widget.size] ?? "col-span-1 row-span-1"}
+                        editing={editing}
+                        onRemove={() => handleRemoveWidget(widget.id)}
+                      >
+                        <WidgetRenderer type={widget.type} size={widget.size} config={widget.config} />
+                      </SortableWidget>
+                    ))}
+                  </AnimatePresence>
                 </div>
               </SortableContext>
             </DndContext>
           ) : (
-            <div className="text-center py-20 text-muted-foreground">
-              <LayoutGrid className="h-12 w-12 mx-auto mb-3 text-muted-foreground/30" />
-              <p className="text-sm">Your workspace is empty</p>
-              <p className="text-[11px] mt-1">Click Edit to add widgets</p>
+            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
+              <div className="w-20 h-20 rounded-2xl bg-muted/30 border border-border/30 flex items-center justify-center">
+                <LayoutGrid className="h-9 w-9 text-muted-foreground/20" />
+              </div>
+              <div className="text-center">
+                <p className="text-sm font-medium text-foreground/70">Your workspace is empty</p>
+                <p className="text-xs mt-1 opacity-50">Click Customize → Add Widget to get started</p>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground/50">
+                <span className="w-5 h-5 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center text-[10px]">1</span>
+                <span>Click Customize</span>
+                <span className="text-border">→</span>
+                <span className="w-5 h-5 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center text-[10px]">2</span>
+                <span>Add Widget</span>
+                <span className="text-border">→</span>
+                <span className="w-5 h-5 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center text-[10px]">3</span>
+                <span>Drag to arrange</span>
+              </div>
             </div>
           )}
         </div>
 
         {/* Right panel */}
-        <div className="w-[240px] shrink-0 flex flex-col gap-3 overflow-hidden">
+        <div className="w-[240px] shrink-0 hidden xl:flex flex-col gap-3 overflow-hidden">
           <WorkspaceActionsPanel />
           <WorkspaceSentimentPanel />
         </div>

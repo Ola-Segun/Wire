@@ -5,13 +5,9 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Check, X, Mail, MessageSquare, GitMerge, Loader2 } from "lucide-react";
+import { Check, X, GitMerge, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-
-const PLATFORM_ICONS: Record<string, React.ReactNode> = {
-  gmail: <Mail className="h-3.5 w-3.5 text-urgent" />,
-  slack: <MessageSquare className="h-3.5 w-3.5 text-chart-4" />,
-};
+import { PlatformIconRaw, PLATFORM_COLORS } from "@/lib/platform-icons";
 
 interface IdentityMergeSuggestionsProps {
   /** Optional className for the wrapping element */
@@ -81,9 +77,10 @@ export function IdentityMergeSuggestions({ className }: IdentityMergeSuggestions
               {/* Primary identity */}
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shrink-0">
-                  {PLATFORM_ICONS[primary.platform] ?? (
-                    <Mail className="h-3.5 w-3.5 text-muted-foreground" />
-                  )}
+                  <PlatformIconRaw
+                    platform={primary.platform}
+                    className={`h-3.5 w-3.5 ${PLATFORM_COLORS[primary.platform]?.text ?? "text-muted-foreground"}`}
+                  />
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs font-medium text-foreground truncate">
@@ -104,9 +101,10 @@ export function IdentityMergeSuggestions({ className }: IdentityMergeSuggestions
               {/* Secondary identity */}
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <div className="w-7 h-7 rounded-lg bg-accent flex items-center justify-center shrink-0">
-                  {PLATFORM_ICONS[secondary.platform] ?? (
-                    <Mail className="h-3.5 w-3.5 text-muted-foreground" />
-                  )}
+                  <PlatformIconRaw
+                    platform={secondary.platform}
+                    className={`h-3.5 w-3.5 ${PLATFORM_COLORS[secondary.platform]?.text ?? "text-muted-foreground"}`}
+                  />
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs font-medium text-foreground truncate">

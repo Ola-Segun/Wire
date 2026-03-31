@@ -1,16 +1,8 @@
-import { Mail, MessageSquare, Hash, Phone } from 'lucide-react';
 import type { Priority, Sentiment, HealthStatus } from '@/data/mockData';
 import type { PlatformType } from '@/lib/constants';
+import { getPlatformIconComponent } from '@/lib/platform-icons';
 
-export const channelIcon = (channel: PlatformType | string) => {
-  switch (channel) {
-    case 'gmail': return Mail;
-    case 'slack': return Hash;
-    case 'discord': return MessageSquare;
-    case 'whatsapp': return Phone;
-    default: return MessageSquare;
-  }
-};
+export const channelIcon = getPlatformIconComponent;
 
 export const priorityColor = (priority: Priority) => {
   switch (priority) {

@@ -7,7 +7,6 @@ import { api } from "../../../../../convex/_generated/api";
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export async function POST(req: Request) {
-  console.log("[Clerk Webhook] Received webhook request");
 
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
 
@@ -42,16 +41,12 @@ export async function POST(req: Request) {
       "svix-timestamp": svix_timestamp,
       "svix-signature": svix_signature,
     }) as WebhookEvent;
-    console.log("[Clerk Webhook] Verification successful");
   } catch (err) {
-    console.error("[Clerk Webhook] Error verifying webhook:", err);
+    console.error("[Clerk Webhook] Verification failed:", err instanceof Error ? err.message : "unknown");
     return new Response("Error: Verification failed", { status: 400 });
   }
 
   const eventType = evt.type;
-  console.log(`[Clerk Webhook] Processing event: ${eventType}`, {
-    data: JSON.stringify(evt.data, null, 2),
-  });
 
   try {
     if (eventType === "user.created") {
@@ -61,12 +56,6 @@ export async function POST(req: Request) {
         console.error("[Clerk Webhook] No email addresses found for user");
         return new Response("Error: No email addresses", { status: 400 });
       }
-
-      console.log("[Clerk Webhook] Creating user in Convex:", {
-        clerkId: id,
-        email: email_addresses[0].email_address,
-        name: `${first_name || ""} ${last_name || ""}`.trim() || "User",
-      });
 
       const result = await convex.mutation(api.users.create, {
         clerkId: id,
@@ -78,13 +67,11 @@ export async function POST(req: Request) {
         onboardingCompleted: false,
       });
 
-      console.log("[Clerk Webhook] User created successfully in Convex:", result);
+      console.log("[Clerk Webhook] user.created processed:", result);
     }
 
     if (eventType === "user.updated") {
       const { id, email_addresses, first_name, last_name, image_url } = evt.data;
-
-      console.log("[Clerk Webhook] Updating user in Convex:", { clerkId: id });
 
       await convex.mutation(api.users.updateFromClerk, {
         clerkId: id,
@@ -92,25 +79,17 @@ export async function POST(req: Request) {
         name: `${first_name || ""} ${last_name || ""}`.trim(),
         avatar: image_url,
       });
-
-      console.log("[Clerk Webhook] User updated successfully in Convex");
     }
 
     if (eventType === "user.deleted") {
       const { id } = evt.data;
 
       if (id) {
-        console.log("[Clerk Webhook] Deleting user in Convex:", { clerkId: id });
-
         await convex.mutation(api.users.deleteByClerkId, {
           clerkId: id,
         });
-
-        console.log("[Clerk Webhook] User deleted successfully in Convex");
       }
     }
-
-    console.log(`[Clerk Webhook] Event ${eventType} processed successfully`);
     return new Response("Webhook processed", { status: 200 });
   } catch (error) {
     console.error(`[Clerk Webhook] Error processing ${eventType}:`, error);

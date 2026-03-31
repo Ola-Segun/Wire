@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalQuery } from "./_generated/server";
 
 // TODO [SECURITY]: OAuth tokens (accessToken, refreshToken, userAccessToken) are
 // currently stored as plain strings. These should be encrypted at rest using
@@ -109,8 +109,8 @@ export const getConnectedPlatforms = query({
   },
 });
 
-// List all active connections across all users (for cron orchestrator)
-export const listAllConnections = query({
+// List all active connections across all users (for cron orchestrator only)
+export const listAllConnections = internalQuery({
   args: {},
   handler: async (ctx) => {
     const allTokens = await ctx.db.query("oauth_tokens").collect();
@@ -145,8 +145,8 @@ export const updateHistoryId = mutation({
   },
 });
 
-// Get all Gmail oauth_token records with full token data (for watch renewal in cron)
-export const getAllGmailTokens = query({
+// Get all Gmail oauth_token records with full token data (for watch renewal in cron only)
+export const getAllGmailTokens = internalQuery({
   args: {},
   handler: async (ctx) => {
     const allTokens = await ctx.db.query("oauth_tokens").collect();

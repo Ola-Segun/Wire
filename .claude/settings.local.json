@@ -32,7 +32,14 @@
       "WebFetch(domain:uselayouts.com)",
       "Bash(grep -E '\"\"date-fns|framer-motion|lucide-react\"\"' package.json)",
       "WebFetch(domain:motion-primitives.com)",
-      "Bash(tail -5 \"c:/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/dashboard/page.tsx\")"
+      "Bash(tail -5 \"c:/Users/HP/Documents/MyDevs/FreshPro/Wire/src/app/\\(dashboard\\)/dashboard/page.tsx\")",
+      "Bash(grep -n \"const PlatformIcon = memo\" src/app/\\\\\\(dashboard\\\\\\)/clients/[id]/page.tsx)",
+      "Bash(cat \"C:\\\\Users\\\\HP\\\\Documents\\\\MyDevs\\\\FreshPro\\\\Wire\\\\src\\\\app\\\\\\(dashboard\\)\\\\pulse\\\\page.tsx\")",
+      "Bash(grep -r \"export const\" convex/*.ts)",
+      "Bash(grep -r \"export const.*query\\\\|mutation\\\\|action\" convex/*.ts)",
+      "Bash(grep -n \"export const.*query\\\\\\(\" convex/*.ts)",
+      "Bash(node -e \"require\\(''''./node_modules/@clerk/nextjs/server''''\\)\")",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }

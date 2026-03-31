@@ -2,7 +2,7 @@
 
 import { action } from "../_generated/server";
 import { v } from "convex/values";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 
 // Reduced from 5→2 to prevent OCC failures on the conversations table.
 // Multiple concurrent syncs writing to the same conversation document cause
@@ -164,7 +164,7 @@ export const syncCurrentUser = action({
   },
   handler: async (ctx, args): Promise<{ synced: number; errors: number }> => {
     const connections: Array<{ userId: any; platform: string }> =
-      await ctx.runQuery(api.oauth.listAllConnections, {});
+      await ctx.runQuery(internal.oauth.listAllConnections, {});
 
     const userPlatforms = connections
       .filter((c) => (c.userId as string) === (args.userId as string))
@@ -184,7 +184,7 @@ export const syncAllUsers = action({
   args: {},
   handler: async (ctx): Promise<{ synced: number; errors: number; skipped: number }> => {
     const connections: Array<{ userId: any; platform: string }> =
-      await ctx.runQuery(api.oauth.listAllConnections, {});
+      await ctx.runQuery(internal.oauth.listAllConnections, {});
 
     if (connections.length === 0) return { synced: 0, errors: 0, skipped: 0 };
 
@@ -244,7 +244,7 @@ export const processAiForAllUsers = action({
   args: {},
   handler: async (ctx): Promise<{ processed: number; errors: number; skipped: number }> => {
     const connections: Array<{ userId: any; platform: string }> =
-      await ctx.runQuery(api.oauth.listAllConnections, {});
+      await ctx.runQuery(internal.oauth.listAllConnections, {});
 
     // Fetch all users to check lastActiveAt
     const users: Array<Record<string, any>> = await ctx.runQuery(api.users.getAllForSync, {});

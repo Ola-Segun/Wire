@@ -4,6 +4,8 @@ import { memo, useEffect, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { PlatformBadge } from "@/lib/platform-icons";
 import {
   Inbox,
   AlertTriangle,
@@ -100,46 +102,60 @@ export default function DashboardPage() {
       </div>
 
       {/* Key Insights */}
-      {stats && (stats.urgentCount > 0 || stats.needsAttention > 0) && (
+      {stats && (
         <div className="surface-raised rounded-xl p-5 mb-8 animate-slide-in">
           <div className="flex items-center gap-2 mb-4">
-            <div className="w-6 h-6 rounded-md bg-warning/10 flex items-center justify-center">
-              <TrendingUp className="h-3.5 w-3.5 text-warning" />
+            <div className={`w-6 h-6 rounded-md flex items-center justify-center ${
+              stats.urgentCount > 0 || stats.needsAttention > 0 ? "bg-warning/10" : "bg-success/10"
+            }`}>
+              <TrendingUp className={`h-3.5 w-3.5 ${
+                stats.urgentCount > 0 || stats.needsAttention > 0 ? "text-warning" : "text-success"
+              }`} />
             </div>
             <span className="text-sm font-display font-semibold text-foreground">
-              Key Insights
+              {stats.urgentCount > 0 || stats.needsAttention > 0 ? "Key Insights" : "All Clear"}
             </span>
           </div>
-          <div className="space-y-2.5">
-            {stats.urgentCount > 0 && (
-              <div className="flex items-center gap-2.5 text-sm">
-                <span className="w-1.5 h-1.5 rounded-full bg-urgent" />
-                <span className="text-foreground/80">
-                  {stats.urgentCount} urgent message
-                  {stats.urgentCount !== 1 ? "s" : ""} requiring attention
-                </span>
+          {stats.urgentCount === 0 && stats.needsAttention === 0 && !(stats.sentiments?.frustrated) ? (
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="h-5 w-5 text-success shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-foreground">You&apos;re all caught up! 🎉</p>
+                <p className="text-xs text-muted-foreground mt-0.5">No urgent messages or at-risk clients right now.</p>
               </div>
-            )}
-            {stats.needsAttention > 0 && (
-              <div className="flex items-center gap-2.5 text-sm">
-                <span className="w-1.5 h-1.5 rounded-full bg-warning" />
-                <span className="text-foreground/80">
-                  {stats.needsAttention} client
-                  {stats.needsAttention !== 1 ? "s" : ""} with low
-                  relationship health
-                </span>
-              </div>
-            )}
-            {stats.sentiments?.frustrated && (
-              <div className="flex items-center gap-2.5 text-sm">
-                <span className="w-1.5 h-1.5 rounded-full bg-urgent" />
-                <span className="text-foreground/80">
-                  {stats.sentiments.frustrated} frustrated message
-                  {stats.sentiments.frustrated !== 1 ? "s" : ""} detected
-                </span>
-              </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {stats.urgentCount > 0 && (
+                <div className="flex items-center gap-2.5 text-sm">
+                  <span className="w-1.5 h-1.5 rounded-full bg-urgent" />
+                  <span className="text-foreground/80">
+                    {stats.urgentCount} urgent message
+                    {stats.urgentCount !== 1 ? "s" : ""} requiring attention
+                  </span>
+                </div>
+              )}
+              {stats.needsAttention > 0 && (
+                <div className="flex items-center gap-2.5 text-sm">
+                  <span className="w-1.5 h-1.5 rounded-full bg-warning" />
+                  <span className="text-foreground/80">
+                    {stats.needsAttention} client
+                    {stats.needsAttention !== 1 ? "s" : ""} with low
+                    relationship health
+                  </span>
+                </div>
+              )}
+              {stats.sentiments?.frustrated && (
+                <div className="flex items-center gap-2.5 text-sm">
+                  <span className="w-1.5 h-1.5 rounded-full bg-urgent" />
+                  <span className="text-foreground/80">
+                    {stats.sentiments.frustrated} frustrated message
+                    {stats.sentiments.frustrated !== 1 ? "s" : ""} detected
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -191,15 +207,22 @@ export default function DashboardPage() {
                       </span>
                       <PlatformBadge platform={msg.platform} />
                       {msg.aiMetadata?.priorityScore && (
-                        <span
-                          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
-                            msg.aiMetadata.priorityScore >= 80
-                              ? "bg-urgent/10 text-urgent"
-                              : "bg-primary/10 text-primary"
-                          }`}
-                        >
-                          P{msg.aiMetadata.priorityScore}
-                        </span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span
+                              className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full cursor-help ${
+                                msg.aiMetadata.priorityScore >= 80
+                                  ? "bg-urgent/10 text-urgent"
+                                  : "bg-primary/10 text-primary"
+                              }`}
+                            >
+                              P{msg.aiMetadata.priorityScore}
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Priority score {msg.aiMetadata.priorityScore}/100 — based on urgency, sentiment, and action items detected in this message</p>
+                          </TooltipContent>
+                        </Tooltip>
                       )}
                       {msg.aiMetadata?.sentiment && (
                         <SentimentIndicator
@@ -461,23 +484,6 @@ const StatCard = memo(function StatCard({
   );
 });
 
-const PlatformBadge = memo(function PlatformBadge({ platform }: { platform: string }) {
-  const colors: Record<string, string> = {
-    gmail: "bg-urgent/10 text-urgent",
-    slack: "bg-chart-4/10 text-chart-4",
-    whatsapp: "bg-success/10 text-success",
-    discord: "bg-primary/10 text-primary",
-  };
-
-  return (
-    <Badge
-      variant="secondary"
-      className={`text-[10px] font-mono ${colors[platform] ?? "bg-muted text-muted-foreground"}`}
-    >
-      {platform}
-    </Badge>
-  );
-});
 
 // ─── DueCountdown ─────────────────────────────────────────────────────────────
 // Live-updating countdown chip for AI-extracted due dates.

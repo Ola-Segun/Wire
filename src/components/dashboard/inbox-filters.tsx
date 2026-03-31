@@ -1,17 +1,11 @@
 "use client";
 
-import { Filter, Mail, MessageSquare, Phone } from "lucide-react";
+import { Filter } from "lucide-react";
 import { PLATFORMS, PLATFORM_LABELS, type PlatformType } from "@/lib/constants";
+import { getPlatformIconComponent } from "@/lib/platform-icons";
 
 export type FilterType = "all" | "unread" | "urgent" | "starred";
 export type ChannelFilter = "all" | PlatformType;
-
-const PLATFORM_ICONS: Record<PlatformType, typeof Mail> = {
-  gmail: Mail,
-  slack: MessageSquare,
-  whatsapp: Phone,
-  discord: MessageSquare,
-};
 
 interface InboxFiltersProps {
   filter: FilterType;
@@ -84,7 +78,7 @@ export default function InboxFilters({
           <span className="hidden sm:inline">All</span>
         </button>
         {PLATFORMS.map((p) => {
-          const Icon = PLATFORM_ICONS[p];
+          const Icon = getPlatformIconComponent(p);
           return (
             <button
               key={p}

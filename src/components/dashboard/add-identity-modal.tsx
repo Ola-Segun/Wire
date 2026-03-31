@@ -12,7 +12,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Link2, Mail, MessageSquare, Users, Loader2, Search } from "lucide-react";
+import { Link2, Users, Loader2, Search } from "lucide-react";
+import { PlatformIconRaw, PLATFORM_COLORS } from "@/lib/platform-icons";
 
 interface AddIdentityModalProps {
   clientId: string;
@@ -20,11 +21,6 @@ interface AddIdentityModalProps {
   open: boolean;
   onClose: () => void;
 }
-
-const PLATFORM_ICONS: Record<string, React.ReactNode> = {
-  gmail: <Mail className="h-4 w-4 text-urgent" />,
-  slack: <MessageSquare className="h-4 w-4 text-chart-4" />,
-};
 
 export function AddIdentityModal({
   clientId,
@@ -105,9 +101,10 @@ export function AddIdentityModal({
                 onClick={() => !linking && handleLink(identity._id)}
               >
                 <div className="w-8 h-8 rounded-lg bg-accent flex items-center justify-center">
-                  {PLATFORM_ICONS[identity.platform] ?? (
-                    <Users className="h-4 w-4 text-muted-foreground" />
-                  )}
+                  <PlatformIconRaw
+                    platform={identity.platform}
+                    className={`h-4 w-4 ${PLATFORM_COLORS[identity.platform]?.text ?? "text-muted-foreground"}`}
+                  />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-foreground truncate">

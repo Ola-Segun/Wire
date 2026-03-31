@@ -22,9 +22,9 @@ import { healthColor, healthBg } from "@/lib/helpers";
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/workspace", label: "Workspace", icon: LayoutGrid },
-  { href: "/bento", label: "Bento", icon: PanelTop },
-  { href: "/calendar", label: "Calendar", icon: CalendarDays },
-  { href: "/pulse", label: "Pulse", icon: Activity },
+  { href: "/bento", label: "Bento", icon: PanelTop, beta: true },
+  { href: "/calendar", label: "Calendar", icon: CalendarDays, beta: true },
+  { href: "/pulse", label: "Pulse", icon: Activity, beta: true },
   { href: "/inbox", label: "Inbox", icon: Inbox },
   { href: "/clients", label: "Clients", icon: Users },
   { href: "/skills", label: "AI Skills", icon: Brain },
@@ -90,7 +90,12 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                 }`}
               >
                 <item.icon className={`w-4 h-4 ${isActive ? "text-primary" : ""}`} />
-                {item.label}
+                <span className="flex-1">{item.label}</span>
+                {(item as any).beta && (
+                  <span className="text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-primary/10 text-primary/70">
+                    Beta
+                  </span>
+                )}
               </Link>
             );
           })}

@@ -32,7 +32,14 @@ function verifySlackSignature(
 // - Dead letter queue for failed processing
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
-  const body = JSON.parse(rawBody);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let body: any;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
 
   // Handle Slack URL verification challenge (no rate limit on this)
   if (body.type === "url_verification") {
@@ -49,25 +56,33 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Verify signature
+  // Verify signature — mandatory, fail-closed if secret is not configured
   const signingSecret = process.env.SLACK_SIGNING_SECRET;
-  if (signingSecret) {
-    const timestamp = req.headers.get("x-slack-request-timestamp") || "";
-    const signature = req.headers.get("x-slack-signature") || "";
+  if (!signingSecret) {
+    console.error("SLACK_SIGNING_SECRET is not set — rejecting webhook");
+    return NextResponse.json({ error: "Webhook not configured" }, { status: 500 });
+  }
 
-    // Reject requests older than 5 minutes (replay attack prevention)
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - parseInt(timestamp)) > 300) {
-      return NextResponse.json({ error: "Stale request" }, { status: 403 });
-    }
+  const timestamp = req.headers.get("x-slack-request-timestamp") ?? "";
+  const signature = req.headers.get("x-slack-signature") ?? "";
 
-    try {
-      if (!verifySlackSignature(signingSecret, timestamp, rawBody, signature)) {
-        return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
-      }
-    } catch {
-      return NextResponse.json({ error: "Signature verification failed" }, { status: 403 });
+  const parsedTimestamp = parseInt(timestamp, 10);
+  if (!timestamp || isNaN(parsedTimestamp)) {
+    return NextResponse.json({ error: "Missing or invalid timestamp" }, { status: 403 });
+  }
+
+  // Reject requests older than 5 minutes (replay attack prevention)
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - parsedTimestamp) > 300) {
+    return NextResponse.json({ error: "Stale request" }, { status: 403 });
+  }
+
+  try {
+    if (!verifySlackSignature(signingSecret, timestamp, rawBody, signature)) {
+      return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
     }
+  } catch {
+    return NextResponse.json({ error: "Signature verification failed" }, { status: 403 });
   }
 
   // Handle event callbacks

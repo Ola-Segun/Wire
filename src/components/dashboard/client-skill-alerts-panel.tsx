@@ -78,7 +78,7 @@ export const ClientSkillAlertsPanel = memo(function ClientSkillAlertsPanel({
   const unreadCount = outputs.filter((o) => !o.isRead).length;
 
   return (
-    <div className="surface-raised rounded-xl p-5">
+    <div className="surface-raised rounded-xl p-5 overflow-auto scrollbar-width-none" style={{ scrollbarWidth: "none" }}>
       <button
         className="w-full flex items-center justify-between"
         onClick={() => setExpanded(!expanded)}

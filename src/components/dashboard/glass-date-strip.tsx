@@ -86,13 +86,18 @@ export function GlassDateStrip({ selectedDate: propDate, onDateSelect }: GlassDa
     (c: any) => c.isOverdue && c.status === "pending"
   ).length;
 
-  // Scroll today into view on mount
+  // Scroll selected date into view on mount AND whenever selection changes —
+  // mirrors the same behavior in GlassCalendar.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const todayEl = el.querySelector("[data-today='true']") as HTMLElement | null;
-    todayEl?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
-  }, []);
+    // Prefer selected button; fall back to today
+    const target = (
+      el.querySelector("[data-selected='true']") ??
+      el.querySelector("[data-today='true']")
+    ) as HTMLElement | null;
+    target?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+  }, [selected]);
 
   const handleSelect = (date: Date) => {
     setSelected(date);
@@ -178,6 +183,7 @@ export function GlassDateStrip({ selectedDate: propDate, onDateSelect }: GlassDa
                   )}
                 <button
                   data-today={isTodayDay || undefined}
+                  data-selected={isSelected || undefined}
                   onClick={() => handleSelect(day)}
                   className="relative flex flex-col items-center gap-1 px-2 py-1.5 rounded-xl transition-all duration-200 shrink-0 group"
                 >

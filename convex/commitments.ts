@@ -339,6 +339,39 @@ export const getPendingWithClients = query({
   },
 });
 
+// Get recently-completed commitments enriched with client names — used by Pulse.
+export const getCompletedWithClients = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await resolveUser(ctx);
+    if (!user) return [];
+
+    const commitments = await ctx.db
+      .query("commitments")
+      .withIndex("by_status", (q) =>
+        q.eq("userId", user._id).eq("status", "completed")
+      )
+      .order("desc")
+      .take(30);
+
+    if (commitments.length === 0) return [];
+
+    const uniqueClientIds = [...new Set(commitments.map((c) => c.clientId as string))];
+    const clientDocs = await Promise.all(
+      uniqueClientIds.map((id) => ctx.db.get(id as Id<"clients">))
+    );
+    const clientMap = new Map<string, string>();
+    for (let i = 0; i < uniqueClientIds.length; i++) {
+      clientMap.set(uniqueClientIds[i], clientDocs[i]?.name ?? "Unknown");
+    }
+
+    return commitments.map((c) => ({
+      ...c,
+      clientName: clientMap.get(c.clientId as string) ?? "Unknown",
+    }));
+  },
+});
+
 // Get all non-cancelled commitments within a date range — calendar grid view.
 // Returns pending + completed (for historical reference). Excludes cancelled.
 // Sorted ascending by dueDate so earliest events render first.

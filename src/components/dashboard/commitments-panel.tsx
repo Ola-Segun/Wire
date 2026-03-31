@@ -66,7 +66,7 @@ export const CommitmentsPanel = memo(function CommitmentsPanel({
   const completed = commitments.filter((c) => c.status === "completed");
 
   return (
-    <div className="surface-raised rounded-xl p-5">
+    <div className="surface-raised rounded-xl p-5  overflow-auto scrollbar-width-none" style={{ scrollbarWidth: "none" }}>
       <button
         className="w-full flex items-center justify-between"
         onClick={() => setExpanded(!expanded)}
@@ -154,7 +154,7 @@ export const CommitmentsPanel = memo(function CommitmentsPanel({
                   </div>
                   {(c as any).sourceMessageText && (
                     <p className="text-[10px] text-muted-foreground/60 mt-1.5 leading-snug line-clamp-2 border-l border-border/40 pl-2 italic">
-                      "{(c as any).sourceMessageText}"
+                      &ldquo;{(c as any).sourceMessageText}&rdquo;
                     </p>
                   )}
                 </div>

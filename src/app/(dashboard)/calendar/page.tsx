@@ -225,7 +225,7 @@ const MonthGrid = memo(function MonthGrid({
   onSelectDay,
 }: {
   viewDate: Date;
-  dayMap: Map<string, any[]>;
+  dayMap: Map<string, any[] | undefined>;
   selectedDay: Date | null;
   onSelectDay: (d: Date) => void;
 }) {
@@ -320,7 +320,7 @@ const WeekGrid = memo(function WeekGrid({
   onSelectDay,
 }: {
   viewDate: Date;
-  dayMap: Map<string, any[]>;
+  dayMap: Map<string, any[] | undefined>;
   selectedDay: Date | null;
   onSelectDay: (d: Date) => void;
 }) {

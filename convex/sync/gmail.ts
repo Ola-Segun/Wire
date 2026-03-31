@@ -2,7 +2,7 @@
 
 import { action } from "../_generated/server";
 import { v } from "convex/values";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { google } from "googleapis";
 
 // Sync Gmail messages for a specific identity/client
@@ -402,7 +402,7 @@ export const renewWatches = action({
 
     // Actions cannot use ctx.db — fetch tokens via a query
     const gmailTokens: Array<Record<string, any>> = await ctx.runQuery(
-      api.oauth.getAllGmailTokens,
+      internal.oauth.getAllGmailTokens,
       {}
     );
     console.log(`Gmail renewWatches: found ${gmailTokens.length} Gmail connections`);

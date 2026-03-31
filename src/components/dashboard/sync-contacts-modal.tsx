@@ -4,7 +4,8 @@ import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useAction, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Loader2, Mail, MessageSquare, Phone, Search, X } from "lucide-react";
+import { Loader2, Search, X } from "lucide-react";
+import { PlatformIconRaw, PLATFORM_COLORS } from "@/lib/platform-icons";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -264,9 +265,6 @@ export function SyncContactsModal({
 
   if (!open) return null;
 
-  const ICON_MAP: Record<string, typeof Mail> = { gmail: Mail, slack: MessageSquare, discord: MessageSquare, whatsapp: Phone };
-  const COLOR_MAP: Record<string, string> = { gmail: "text-urgent", slack: "text-chart-4", discord: "text-primary", whatsapp: "text-success" };
-  const PlatformIcon = ICON_MAP[platform] ?? MessageSquare;
   const LABELS: Record<string, string> = { gmail: "Gmail", slack: "Slack", discord: "Discord", whatsapp: "WhatsApp" };
   const platformLabel = LABELS[platform] ?? platform;
 
@@ -291,8 +289,9 @@ export function SyncContactsModal({
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-border/20">
           <div className="flex items-center gap-2">
-            <PlatformIcon
-              className={`h-4 w-4 ${COLOR_MAP[platform] ?? "text-muted-foreground"}`}
+            <PlatformIconRaw
+              platform={platform}
+              className={`h-4 w-4 ${PLATFORM_COLORS[platform]?.text ?? "text-muted-foreground"}`}
             />
             <h3 className="text-sm font-display font-semibold text-foreground">
               Sync {platformLabel} Contacts
