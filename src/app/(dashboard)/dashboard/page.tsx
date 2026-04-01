@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Badge } from "@/components/ui/badge";
@@ -17,9 +17,12 @@ import {
   CheckCircle2,
   ExternalLink,
   MessageSquare,
+  Sparkles,
+  LayoutGrid,
 } from "lucide-react";
 import Link from "next/link";
 import { formatRelativeTime } from "@/lib/date-utils";
+import SmartSearch from "@/components/dashboard/smart-search";
 
 export default function DashboardPage() {
   const user = useQuery(api.users.getCurrentUser);
@@ -27,6 +30,11 @@ export default function DashboardPage() {
   const clients = useQuery(api.clients.getByUser, { sortBy: "recent" });
   const urgentMessages = useQuery(api.messages.getUrgent);
   const pendingCommitments = useQuery(api.commitments.getPendingWithClients);
+
+  // ⌘K — open command palette via custom event (layout owns the state)
+  const openCommandPalette = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("wire:open-command-palette"));
+  }, []);
 
   const completeCommitment = useMutation(api.commitments.complete).withOptimisticUpdate(
     (localStore, args) => {
@@ -53,14 +61,26 @@ export default function DashboardPage() {
   return (
     <div className="h-full overflow-y-auto scrollbar-thin pb-28">
     <div className="max-w-7xl mx-auto p-6 animate-fade-in">
-      {/* Welcome Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-display font-bold text-foreground">
-          Welcome back, {user.name.split(" ")[0]}
-        </h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Here&apos;s what&apos;s happening with your clients today.
-        </p>
+      {/* Welcome Header + Smart Search */}
+      <div className="mb-6">
+        <div className="flex items-end justify-between gap-4 mb-4">
+          <div>
+            <h1 className="text-2xl font-display font-bold text-foreground">
+              Welcome back, {user.name.split(" ")[0]}
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Here&apos;s what&apos;s happening with your clients today.
+            </p>
+          </div>
+          <Link
+            href="/workspace"
+            className="hidden sm:flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 font-medium transition-colors shrink-0"
+          >
+            <LayoutGrid className="h-3.5 w-3.5" /> Workspace
+          </Link>
+        </div>
+        {/* Smart Search — wired to Convex full-text search, ⌘K triggers CommandPalette */}
+        <SmartSearch onOpenCommandPalette={openCommandPalette} />
       </div>
 
       {/* Stats Grid */}
@@ -253,9 +273,15 @@ export default function DashboardPage() {
               ))}
           </div>
         ) : (
-          <div className="text-center py-12 text-muted-foreground">
-            <Inbox className="h-12 w-12 mx-auto mb-3 text-muted-foreground/30" />
-            <p>No urgent messages. You&apos;re all caught up!</p>
+          <div className="text-center py-10 text-muted-foreground">
+            <div className="w-14 h-14 rounded-2xl bg-success/10 flex items-center justify-center mx-auto mb-3">
+              <CheckCircle2 className="h-7 w-7 text-success" />
+            </div>
+            <p className="text-sm font-medium text-foreground/70">Inbox Zero — you&apos;re all caught up!</p>
+            <p className="text-xs text-muted-foreground mt-1">No urgent messages right now. Wire will notify you when something needs attention.</p>
+            <Link href="/inbox" className="inline-flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 font-medium mt-3 transition-colors">
+              Browse all messages <ArrowRight className="h-3 w-3" />
+            </Link>
           </div>
         )}
       </div>
@@ -429,9 +455,20 @@ export default function DashboardPage() {
               })}
           </div>
         ) : (
-          <div className="text-center py-12 text-muted-foreground">
-            <Users className="h-12 w-12 mx-auto mb-3 text-muted-foreground/30" />
-            <p>No clients yet. Connect a platform to get started!</p>
+          <div className="text-center py-10">
+            <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-3">
+              <Sparkles className="h-7 w-7 text-primary" />
+            </div>
+            <p className="text-sm font-medium text-foreground/70">No clients yet — let&apos;s get started</p>
+            <p className="text-xs text-muted-foreground mt-1">Connect a messaging platform to start syncing your client conversations.</p>
+            <div className="flex items-center justify-center gap-3 mt-4">
+              <Link href="/settings/integrations" className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors">
+                Connect platform <ArrowRight className="h-3 w-3" />
+              </Link>
+              <Link href="/clients/new" className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors">
+                Add client manually
+              </Link>
+            </div>
           </div>
         )}
       </div>

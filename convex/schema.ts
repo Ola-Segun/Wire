@@ -588,4 +588,79 @@ export default defineSchema({
     .index("by_conversation", ["conversationId"])
     .index("by_client", ["clientId"])
     .index("by_user", ["userId"]),
+
+  // ============================================
+  // QUICK REPLY TEMPLATES
+  // User-defined message templates with variable substitution.
+  // Variables: {{client_name}}, {{project}}, {{date}}, {{amount}}
+  // ============================================
+
+  templates: defineTable({
+    userId: v.id("users"),
+
+    name: v.string(),
+    content: v.string(),
+    category: v.string(),            // "greeting" | "follow-up" | "payment" | "delivery" | "general"
+    variables: v.array(v.string()),
+
+    usageCount: v.number(),
+    lastUsedAt: v.optional(v.number()),
+    isDefault: v.boolean(),
+
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_category", ["userId", "category"])
+    .index("by_user_usage", ["userId", "usageCount"]),
+
+  // ============================================
+  // CONVERSATIONAL Q&A SESSIONS
+  // ============================================
+
+  qa_sessions: defineTable({
+    userId: v.id("users"),
+
+    question: v.string(),
+    answer: v.string(),
+
+    sourceMessageIds: v.array(v.id("messages")),
+    confidence: v.number(),          // 0–1
+    clientId: v.optional(v.id("clients")),
+    tokensUsed: v.optional(v.number()),
+
+    createdAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_recent", ["userId", "createdAt"]),
+
+  // ============================================
+  // SEND TIME OPTIMIZATION
+  // Per-client best contact time heatmap.
+  // ============================================
+
+  send_time_optimization: defineTable({
+    userId: v.id("users"),
+    clientId: v.id("clients"),
+
+    bestHour: v.number(),
+    bestDayOfWeek: v.number(),
+
+    heatmap: v.optional(v.array(v.object({
+      hour: v.number(),
+      dayOfWeek: v.number(),
+      responseRate: v.number(),
+      avgResponseMs: v.number(),
+      sampleCount: v.number(),
+    }))),
+
+    confidence: v.string(),          // "low" | "medium" | "high"
+    sampleCount: v.number(),
+
+    computedAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_client", ["clientId"])
+    .index("by_user_client", ["userId", "clientId"]),
 });

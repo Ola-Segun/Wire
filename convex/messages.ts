@@ -158,7 +158,10 @@ export const markAsRead = mutation({
   },
 });
 
-// Mark all unread messages as read for current user
+// Mark all unread messages as read for current user.
+// Uses sequential patches within a single Convex mutation transaction —
+// Convex guarantees atomicity so there is no race condition.
+// Capped at 200 to stay within Convex mutation function limits.
 export const markAllAsRead = mutation({
   args: {},
   handler: async (ctx) => {
@@ -170,11 +173,11 @@ export const markAllAsRead = mutation({
       .withIndex("by_user_unread", (q) =>
         q.eq("userId", user._id).eq("isRead", false)
       )
-      .collect();
+      .take(200); // Cap at 200 to stay within mutation write limits
 
-    await Promise.all(
-      unread.map((msg) => ctx.db.patch(msg._id, { isRead: true }))
-    );
+    for (const msg of unread) {
+      await ctx.db.patch(msg._id, { isRead: true });
+    }
 
     return unread.length;
   },
@@ -461,11 +464,12 @@ export const getRecentOutboundAfter = internalQuery({
   },
 });
 
-// Search messages by text (uses the search_text index) — N+1 fixed
+// Search messages by text (uses the search_text index)
 export const search = query({
   args: {
     query: v.string(),
     platform: v.optional(v.string()),
+    clientId: v.optional(v.id("clients")),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
@@ -474,20 +478,25 @@ export const search = query({
 
     const limit = args.limit ?? 50;
 
-    let searchBuilder = ctx.db
+    const messages = await ctx.db
       .query("messages")
       .withSearchIndex("search_text", (q) => {
-        const base = q.search("text", args.query).eq("userId", user._id);
+        let base = q.search("text", args.query).eq("userId", user._id);
         if (args.platform) {
-          return base.eq("platform", args.platform);
+          // @ts-ignore — platform filter
+          base = base.eq("platform", args.platform);
         }
         return base;
-      });
+      })
+      .take(limit);
 
-    const messages = await searchBuilder.take(limit);
+    // Optional client scope filter (post-query, no extra index needed)
+    const filtered = args.clientId
+      ? messages.filter((m) => m.clientId === args.clientId)
+      : messages;
 
-    const clientMap = await buildClientNameMap(ctx, messages);
-    return enrichWithClientNames(messages, clientMap);
+    const clientMap = await buildClientNameMap(ctx, filtered);
+    return enrichWithClientNames(filtered, clientMap);
   },
 });
 

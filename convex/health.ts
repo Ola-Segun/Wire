@@ -88,13 +88,17 @@ function calculateSentimentScore(messages: HealthMessage[]): number {
 
   if (inboundWithSentiment.length === 0) return 60; // No data → neutral
 
+  // Primary AI output values listed first (positive, neutral, negative, frustrated).
+  // Alias values (satisfied, concerned, angry) included for backward compat but
+  // are rarely produced by the current unified analysis prompt.
   const sentimentMap: Record<string, number> = {
     positive:   90,
-    satisfied:  85,
     neutral:    60,
-    concerned:  40,
-    frustrated: 20,
     negative:   15,
+    frustrated: 20,
+    // Aliases — the AI may occasionally output these variants
+    satisfied:  85,
+    concerned:  40,
     angry:       5,
   };
 

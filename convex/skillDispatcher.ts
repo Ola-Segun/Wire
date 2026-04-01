@@ -56,6 +56,8 @@ export const onMessageAnalyzed = internalAction({
       runScopeGuardian(ctx,   userId, messageId, clientId, aiMetadata),
       runChurnPredictor(ctx,  userId, messageId, clientId, aiMetadata),
       runRevenueRadar(ctx,    userId, messageId, clientId, aiMetadata),
+      // Cross-platform conflict detector (zero AI cost)
+      ctx.runAction(internal.ai.conflictDetector.detectForClient, { userId, clientId }),
     ]);
   },
 });
@@ -79,6 +81,10 @@ export const runCronSkills = internalAction({
         runPaymentSentinel(ctx,        user._id),
         runRevenueLeakageDetector(ctx, user._id),
         runCrisisMode(ctx,             user._id),
+        // Re-engagement scheduler — 1 Haiku call per dormant client
+        ctx.runAction(internal.ai.reengagement.runForUser, { userId: user._id }),
+        // Conflict detector cron run — zero AI cost
+        ctx.runAction(internal.ai.conflictDetector.detectForUser, { userId: user._id }),
       ]);
     }
   },

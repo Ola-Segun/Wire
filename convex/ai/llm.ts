@@ -171,6 +171,42 @@ async function callAnthropic(opts: LLMOptions): Promise<LLMResult> {
 
 // ─── NVIDIA NIM call (OpenAI-compatible) ─────────────────────────────────────
 
+const NVIDIA_MAX_RETRIES   = 1;
+const NVIDIA_BASE_DELAY_MS = 1000;
+
+/**
+ * Call NVIDIA with retry logic for transient errors.
+ * Retries once with exponential backoff before giving up.
+ */
+async function callNvidiaWithRetry(opts: LLMOptions): Promise<LLMResult> {
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt <= NVIDIA_MAX_RETRIES; attempt++) {
+    try {
+      return await callNvidia(opts);
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err).toLowerCase();
+      const isTransient =
+        msg.includes("500") || msg.includes("503") || msg.includes("429") ||
+        msg.includes("timeout") || msg.includes("network") || msg.includes("fetch failed");
+
+      if (isTransient && attempt < NVIDIA_MAX_RETRIES) {
+        const delay = NVIDIA_BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(
+          `[LLM/NVIDIA] Transient error (attempt ${attempt + 1}/${NVIDIA_MAX_RETRIES + 1}), retrying in ${delay}ms:`,
+          String(err).split("\n")[0]
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      break;
+    }
+  }
+
+  throw lastErr;
+}
+
 async function callNvidia(opts: LLMOptions): Promise<LLMResult> {
   const apiKey = process.env.NVIDIA_API_KEY;
   if (!apiKey) throw new Error("NVIDIA_API_KEY is not set — cannot use fallback provider");
@@ -252,7 +288,7 @@ export async function callLLMWithMeta(opts: LLMOptions): Promise<LLMResult> {
         "[LLM] Falling back to NVIDIA NIM after Anthropic error:",
         String(err).split("\n")[0]
       );
-      return callNvidia(opts);
+      return callNvidiaWithRetry(opts);
     }
     throw err;
   }

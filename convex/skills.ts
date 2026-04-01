@@ -114,8 +114,32 @@ export const SKILL_REGISTRY: SkillDefinition[] = [
     category: "productivity",
     trigger: "on_demand",
     requiresAiCall: true,
-    defaultEnabled: false,
+    defaultEnabled: true,
     defaultConfig: {},
+  },
+
+  // New: Cross-platform conflict detection — zero AI cost, pure DB logic
+  {
+    slug: "conflict_detector",
+    name: "Conflict Detector",
+    description: "Detects sentiment/intent contradictions across platforms (e.g. positive on Slack, negative on email)",
+    category: "guardian",
+    trigger: "reactive",
+    requiresAiCall: false,
+    defaultEnabled: true,
+    defaultConfig: { sentimentWindow: 48 * 60 * 60 * 1000 },
+  },
+
+  // New: Proactive re-engagement for dormant clients
+  {
+    slug: "reengagement_scheduler",
+    name: "Re-engagement Scheduler",
+    description: "Identifies dormant clients and generates personalised outreach templates",
+    category: "intelligence",
+    trigger: "cron",
+    requiresAiCall: true, // 1 Haiku call per dormant client
+    defaultEnabled: true,
+    defaultConfig: { dormancyMultiplier: 2 },
   },
 ];
 

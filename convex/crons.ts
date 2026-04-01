@@ -169,5 +169,17 @@ crons.cron(
   internal.skillDispatcher.runDailyBriefings
 );
 
+// ============================================
+// SEND TIME OPTIMIZATION — Weekly learning
+// ============================================
+
+// Recompute send time optimization for all clients weekly.
+// Zero AI cost — pure DB analytics.
+crons.interval(
+  "send-time-optimization",
+  { hours: 168 }, // weekly
+  internal.ai.sendTimeOptimization.computeForAllUsers
+);
+
 export default crons;
 

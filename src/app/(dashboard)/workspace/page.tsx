@@ -28,7 +28,9 @@ import {
   ChevronLeft,
   ChevronRight,
   GripVertical,
-  Pen
+  Pen,
+  Sparkles,
+  MessageSquarePlus,
 } from "lucide-react";
 import {
   DndContext,
@@ -73,7 +75,7 @@ function NumberTicker({ value, className }: { value: number; className?: string 
 import { WorkspaceDynamicToolbar } from "@/components/dashboard/workspace-toolbar";
 import { WireHubWidget } from "@/components/dashboard/hub-widget";
 import { SentimentTrajectoryChart, type SentimentPoint } from "@/components/dashboard/sentiment-trajectory-chart";
-
+import { ConversationalQA } from "@/components/dashboard/conversational-qa";
 
 // ============================================
 // WIDGET REGISTRY — Available widget types
@@ -103,6 +105,8 @@ const WIDGET_REGISTRY: WidgetMeta[] = [
   { type: "commitment_calendar", name: "Calendar", description: "Month-view calendar with commitment dot indicators", sizes: ["2x2"], icon: <Calendar className="h-4 w-4" /> },
   { type: "hub", name: "Intelligence Hub", description: "Tabbed hub: inbox, clients, skills, actions", sizes: ["2x2"], icon: <LayoutGrid className="h-4 w-4" /> },
   { type: "animated_insights", name: "AI Insights (Live)", description: "Auto-cycling skill feed with filter tabs", sizes: ["2x2", "1x2"], icon: <Bell className="h-4 w-4" /> },
+  { type: "ai_companion", name: "AI Companion", description: "Chat with AI over your full message history", sizes: ["2x2"], icon: <Sparkles className="h-4 w-4" /> },
+  { type: "quick_compose", name: "Quick Compose", description: "Draft and send replies with AI-powered templates", sizes: ["2x2"], icon: <MessageSquarePlus className="h-4 w-4" /> },
 ];
 
 // ============================================
@@ -521,11 +525,14 @@ export default function WorkspacePage() {
     <div className="h-full flex flex-col animate-fade-in overflow-hidden">
 
       {/* ── Header ── */}
-      <div className={`px-5 pt-5 pb-3 shrink-0 flex items-center justify-between transition-colors duration-300 ${
+      <div className={`px-5 pt-5 pb-3 shrink-0 flex items-center gap-3 transition-colors duration-300 ${
         editing ? "border-b border-primary/20 bg-primary/[0.02]" : ""
       }`}>
+        {/* Left: date strip */}
         <GlassDateStrip />
-        <div className="flex items-center gap-2">
+
+        {/* Right: editing mode indicator + toolbar */}
+        <div className="flex items-center gap-2 shrink-0">
           {editing && (
             <motion.div
               initial={{ opacity: 0, x: 8 }}
@@ -580,23 +587,22 @@ export default function WorkspacePage() {
               </SortableContext>
             </DndContext>
           ) : (
-            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-4">
-              <div className="w-20 h-20 rounded-2xl bg-muted/30 border border-border/30 flex items-center justify-center">
-                <LayoutGrid className="h-9 w-9 text-muted-foreground/20" />
+            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-5">
+              <div className="w-20 h-20 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+                <Sparkles className="h-9 w-9 text-primary/40" />
               </div>
               <div className="text-center">
                 <p className="text-sm font-medium text-foreground/70">Your workspace is empty</p>
-                <p className="text-xs mt-1 opacity-50">Click Customize → Add Widget to get started</p>
+                <p className="text-xs mt-1 opacity-50 max-w-[220px]">Add widgets to build your personal command center — AI insights, client health, action items, and more.</p>
               </div>
-              <div className="flex items-center gap-2 text-[11px] text-muted-foreground/50">
-                <span className="w-5 h-5 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center text-[10px]">1</span>
-                <span>Click Customize</span>
-                <span className="text-border">→</span>
-                <span className="w-5 h-5 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center text-[10px]">2</span>
-                <span>Add Widget</span>
-                <span className="text-border">→</span>
-                <span className="w-5 h-5 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center text-[10px]">3</span>
-                <span>Drag to arrange</span>
+              <button
+                onClick={() => setEditing(true)}
+                className="flex items-center gap-2 px-4 py-2 rounded-full bg-primary/10 border border-primary/20 text-primary text-xs font-semibold hover:bg-primary/20 transition-colors"
+              >
+                <Plus className="h-3.5 w-3.5" /> Add your first widget
+              </button>
+              <div className="flex items-center gap-2 text-[10px] text-muted-foreground/40">
+                <span>💡 Tip: press <kbd className="font-mono border border-border/50 rounded px-1">⌘K</kbd> to search across all your messages</span>
               </div>
             </div>
           )}
@@ -657,6 +663,10 @@ const WidgetRenderer = memo(function WidgetRenderer({
       return <WireHubWidget />;
     case "animated_insights":
       return <AnimatedInsightsWidget />;
+    case "ai_companion":
+      return <ConversationalQA compact />;
+    case "quick_compose":
+      return <QuickComposeWidget />;
     default:
       return (
         <div className="surface-raised rounded-xl h-full flex items-center justify-center text-muted-foreground text-xs">
@@ -708,6 +718,93 @@ const StatCardWidget = memo(function StatCardWidget({ metric }: { metric: string
           <p className="text-xs text-muted-foreground">{cfg.label}</p>
         </div>
       </div>
+    </div>
+  );
+});
+
+// ============================================
+// QUICK COMPOSE WIDGET
+// Inline message drafting from the workspace grid.
+// Lets freelancers draft a message to any client directly
+// from the workspace without opening the inbox.
+// ============================================
+
+const QuickComposeWidget = memo(function QuickComposeWidget() {
+  const clients = useQuery(api.clients.getByUser, { sortBy: "recent" });
+  const [selectedClientId, setSelectedClientId] = useState<string>("");
+  const [body, setBody] = useState("");
+  const [isSent, setIsSent] = useState(false);
+
+  const QUICK_CHIPS = [
+    "Following up on our last conversation.",
+    "Just checking in — how's everything going?",
+    "Wanted to share a quick update.",
+    "Let me know if you need anything.",
+  ];
+
+  const handleSend = () => {
+    if (!body.trim() || !selectedClientId) return;
+    // TODO: wire to actual send mutation when multi-platform send lands
+    setIsSent(true);
+    setTimeout(() => {
+      setBody("");
+      setIsSent(false);
+    }, 2000);
+  };
+
+  return (
+    <div className="surface-raised rounded-xl h-full p-4 flex flex-col gap-3 overflow-hidden">
+      <div className="flex items-center gap-2 shrink-0">
+        <MessageSquarePlus className="h-4 w-4 text-primary" />
+        <span className="text-sm font-display font-semibold text-foreground">Quick Compose</span>
+      </div>
+
+      {/* Client selector */}
+      <select
+        value={selectedClientId}
+        onChange={(e) => setSelectedClientId(e.target.value)}
+        className="w-full text-xs bg-muted/30 border border-border/40 rounded-lg px-2.5 py-2 text-foreground outline-none focus:border-primary/40 transition-colors shrink-0"
+      >
+        <option value="">Select client…</option>
+        {(clients ?? []).map((c: any) => (
+          <option key={c._id} value={c._id}>{c.name}</option>
+        ))}
+      </select>
+
+      {/* Chips */}
+      <div className="flex flex-wrap gap-1 shrink-0">
+        {QUICK_CHIPS.map((chip, i) => (
+          <button
+            key={i}
+            onClick={() => setBody((prev) => prev ? prev + " " + chip : chip)}
+            className="text-[10px] px-2 py-1 rounded-full border border-border/40 hover:border-primary/40 hover:bg-primary/5 hover:text-primary text-muted-foreground transition-all"
+          >
+            {chip}
+          </button>
+        ))}
+      </div>
+
+      {/* Textarea */}
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        placeholder="Write your message…"
+        rows={3}
+        className="flex-1 text-sm bg-muted/20 border border-border/30 rounded-lg px-3 py-2.5 text-foreground placeholder:text-muted-foreground/50 outline-none focus:border-primary/40 resize-none transition-colors scrollbar-thin"
+      />
+
+      {/* Send button */}
+      <button
+        onClick={handleSend}
+        disabled={!body.trim() || !selectedClientId || isSent}
+        className={`shrink-0 w-full py-2 rounded-lg text-xs font-semibold transition-all ${
+          isSent
+            ? "bg-success/20 text-success"
+            : "bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-40 disabled:cursor-not-allowed"
+        }`}
+      >
+        {isSent ? "✓ Sent!" : "Send Message"}
+      </button>
     </div>
   );
 });

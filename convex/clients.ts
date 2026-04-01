@@ -258,3 +258,21 @@ export const unarchive = mutation({
     }
   },
 });
+
+// Public query: get a single client by ID (for template personalization, etc.)
+export const getById = query({
+  args: { clientId: v.id("clients") },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return null;
+    const client = await ctx.db.get(args.clientId);
+    if (!client) return null;
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
+      .first();
+    if (!user || client.userId !== user._id) return null;
+    return client;
+  },
+});
+

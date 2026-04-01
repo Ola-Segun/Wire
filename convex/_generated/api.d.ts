@@ -10,9 +10,13 @@
 
 import type * as ai_batch from "../ai/batch.js";
 import type * as ai_clientIntelligence from "../ai/clientIntelligence.js";
+import type * as ai_conflictDetector from "../ai/conflictDetector.js";
+import type * as ai_conversationQA from "../ai/conversationQA.js";
 import type * as ai_dailyBriefing from "../ai/dailyBriefing.js";
 import type * as ai_llm from "../ai/llm.js";
 import type * as ai_onDemandSkills from "../ai/onDemandSkills.js";
+import type * as ai_reengagement from "../ai/reengagement.js";
+import type * as ai_sendTimeOptimization from "../ai/sendTimeOptimization.js";
 import type * as ai_unified from "../ai/unified.js";
 import type * as ai_writing_assistant from "../ai/writing_assistant.js";
 import type * as analytics from "../analytics.js";
@@ -48,6 +52,7 @@ import type * as sync_orchestrator from "../sync/orchestrator.js";
 import type * as sync_slack from "../sync/slack.js";
 import type * as sync_tokenRefresh from "../sync/tokenRefresh.js";
 import type * as sync_whatsapp from "../sync/whatsapp.js";
+import type * as templates from "../templates.js";
 import type * as users from "../users.js";
 import type * as webhookReliability from "../webhookReliability.js";
 import type * as workspaceLayouts from "../workspaceLayouts.js";
@@ -61,9 +66,13 @@ import type {
 declare const fullApi: ApiFromModules<{
   "ai/batch": typeof ai_batch;
   "ai/clientIntelligence": typeof ai_clientIntelligence;
+  "ai/conflictDetector": typeof ai_conflictDetector;
+  "ai/conversationQA": typeof ai_conversationQA;
   "ai/dailyBriefing": typeof ai_dailyBriefing;
   "ai/llm": typeof ai_llm;
   "ai/onDemandSkills": typeof ai_onDemandSkills;
+  "ai/reengagement": typeof ai_reengagement;
+  "ai/sendTimeOptimization": typeof ai_sendTimeOptimization;
   "ai/unified": typeof ai_unified;
   "ai/writing_assistant": typeof ai_writing_assistant;
   analytics: typeof analytics;
@@ -99,6 +108,7 @@ declare const fullApi: ApiFromModules<{
   "sync/slack": typeof sync_slack;
   "sync/tokenRefresh": typeof sync_tokenRefresh;
   "sync/whatsapp": typeof sync_whatsapp;
+  templates: typeof templates;
   users: typeof users;
   webhookReliability: typeof webhookReliability;
   workspaceLayouts: typeof workspaceLayouts;
